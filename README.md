@@ -56,13 +56,13 @@ Default mode: **xvfb** on Linux if `Xvfb` exists, else **headless**. `host` is s
 
 Default profile is **ephemeral**. No import from `~/.config/chromium` or Firefox.
 
-`/browser login` opens an isolated profile at `~/.pi/agent/browser-profile` (mode 0700, including if the dir already exists) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
+`/browser login` opens an isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
 
-Do not type passwords into the `browser` tool. Tool results, errors, and `/browser status` redact URL userinfo, sensitive query keys, and cookie values of 6+ characters collected from the browser. That is not a complete secret scanner.
+Do not type passwords into the `browser` tool.
 
 ## Network gate
 
-Every navigation and subresource is checked. Chromium traffic goes through a local pinning proxy on loopback (random Basic proxy credentials, not logged): DNS is resolved, private answers are rejected, and the TCP connect uses the validated address (no second lookup). Origin grants are enforced in the browser route layer, not by blocking CDN hosts at the proxy. Blocked:
+Every navigation and subresource is checked. Chromium traffic goes through a local pinning proxy: DNS is resolved, private answers are rejected, and the TCP connect uses the validated address (no second lookup). Blocked:
 
 - loopback, RFC1918, link-local, metadata, special-use
 - URL credentials
@@ -89,18 +89,3 @@ On a machine with Xvfb, headed smoke is:
 ```bash
 BROWSER_LIVE=1 xvfb-run -a node --test --experimental-strip-types tests/live.test.ts
 ```
-
-## Publish
-
-- GitHub: `kvidzibo/pi-browser`
-- npm: `@kvidzibo/pi-browser` (gallery crawls the `pi-package` keyword)
-
-Push to `main` runs `.github/workflows/publish.yml`: unit tests, then `npm publish` if `package.json` `version` is not already on npm. Same version = skip (no error). The first successful `main` push after trusted publisher is bound publishes `0.1.0`. Bind the publisher **before** that push.
-
-Bump `version` in the PR that should ship. Do not republish an existing version.
-
-One-time npm trusted publisher (no `NPM_TOKEN` secret):
-
-1. [Package access](https://www.npmjs.com/package/@kvidzibo/pi-browser/access) → **Trusted Publisher** (if the package is not on npm yet, add the publisher from your npm account packages page for this name)
-2. GitHub Actions: user `kvidzibo`, repo `pi-browser`, workflow `publish.yml`
-3. Allow `npm publish`
