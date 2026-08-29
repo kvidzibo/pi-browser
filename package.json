@@ -1,0 +1,52 @@
+{
+  "name": "@kvidzibo/pi-browser",
+  "version": "0.1.0",
+  "description": "Pi package: Patchright Chromium, headed Xvfb, isolated login profile, hard LAN block",
+  "author": "Tomas Rackauskas",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kvidzibo/pi-browser.git"
+  },
+  "homepage": "https://github.com/kvidzibo/pi-browser#readme",
+  "bugs": {
+    "url": "https://github.com/kvidzibo/pi-browser/issues"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:load",
+    "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
+    "test:load": "node --test --experimental-strip-types load.test.ts"
+  },
+  "dependencies": {
+    "patchright-core": "^1.62.1"
+  },
+  "files": [
+    "actions.ts",
+    "browser-bin.ts",
+    "constants.ts",
+    "display.ts",
+    "gate.ts",
+    "grants.ts",
+    "index.ts",
+    "pin-proxy.ts",
+    "redact.ts",
+    "session.ts",
+    "snapshot.ts",
+    "LICENSE",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
