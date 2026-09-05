@@ -1,6 +1,6 @@
 # pi-browser
 
-Pi package. Agent-driven Chromium for pages that need JavaScript or a click path.
+Let a [Pi coding agent](https://github.com/earendil-works/pi) inspect and interact with JavaScript-heavy pages without borrowing your everyday browser profile. Wraps Patchright/Chromium with page snapshots, browser actions and explicit permissions for signed-in work.
 
 Driver is **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/Patchright)** (Playwright fork): no `Runtime.enable` leak, no `--enable-automation`, `navigator.webdriver` patched. Default display is **headed Xvfb** on Linux. Prefers installed Google Chrome over bundled Chromium.
 
@@ -17,7 +17,39 @@ This is anti-automation hardening, not a captcha solver and not a residential-IP
 
 > **Security:** Pi packages run with your full system permissions. After `/browser login`, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs, `file:`, and your real Chrome/Chromium profile are out of reach on purpose. Tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
 
+## Quick example
+
+After [installing](#install), start a fresh Pi session or run `/browser logout` yourself to select an ephemeral profile. Then ask Pi:
+
+```text
+Use browser to open https://example.com in an anonymous session.
+Take a snapshot and report the page title and first heading.
+Do not log in, submit forms or follow links. Close the browser when done.
+```
+
+The basic sequence uses three separate `browser` tool calls:
+
+```json
+{ "action": "navigate", "url": "https://example.com" }
+```
+
+```json
+{ "action": "snapshot" }
+```
+
+```json
+{ "action": "close" }
+```
+
+This is a usage example, not a recorded browser session. It needs a browser executable and public network access, but no login. For clicks or typing, use references from the latest snapshot rather than inventing element IDs.
+
+**Permission check:** `/browser status` shows the mode, URL and origin grants. For signed-in work, run `/browser login` yourself, log in and grant only the exact origins needed. The model cannot initiate login or switch to your real display.
+
+**Design trade-off:** ephemeral anonymous profiles and per-session login grants keep agent browsing separate from your everyday profile. Signed-in tasks need a manual setup step, and ungranted document destinations are blocked rather than silently inheriting access. These controls are not a complete sandbox. See [grant handling](grants.ts), [grant tests](tests/grants.test.ts) and the [network limitations](#network-gate).
+
 ## Install
+
+This README tracks repository source. npm packages and Git tags may be behind it; check the version you install before relying on newer features.
 
 Need Google Chrome or Chromium. Optional on Linux: `xvfb` (headed virtual display — default when present).
 
