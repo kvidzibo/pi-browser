@@ -18,6 +18,8 @@ import { cmdlineOf, killPid, resolveMode, startXvfb, stopXvfb, type XvfbHandle }
 import { isAboutBlank, isPassthroughRequestUrl, validateBrowserUrl } from "./gate.ts";
 import { classifyGrantedRequest, originAllowed, originOf } from "./grants.ts";
 import { startPinProxy, type PinProxy } from "./pin-proxy.ts";
+import { fetchCookieless } from "./cookieless.ts";
+import { browserNetworkArgs } from "./constants.ts";
 import { redactUrl, sanitizeWithSecrets } from "./redact.ts";
 import { formatUntrustedSnapshot, parseAgentRef } from "./snapshot.ts";
 
@@ -61,7 +63,6 @@ function ensurePrivateDir(path: string): string {
 
 export type SessionResult = {
 	content: string;
-	isError?: boolean;
 	details?: Record<string, unknown>;
 };
 
@@ -78,17 +79,16 @@ export class BrowserSession {
 	private activeTab = "";
 	private tabSeq = 0;
 	private snapshotRev = 0;
-	private abortLaunch: AbortController | undefined;
+	private networkAbort = new AbortController();
 	private forcePersistent = false;
 	private proxy: PinProxy | undefined;
 	private cookieSecrets = new Set<string>();
 
+	private readonly resourceFetch: typeof fetchCookieless;
+	constructor(resourceFetch: typeof fetchCookieless = fetchCookieless) { this.resourceFetch = resourceFetch; }
+
 	withLock<T>(fn: () => Promise<T>): Promise<T> {
 		return this.lock.run(fn);
-	}
-
-	configuredMode(): DisplayMode | "auto" {
-		return this.mode;
 	}
 
 	setMode(mode: DisplayMode): void {
@@ -97,10 +97,6 @@ export class BrowserSession {
 
 	grantList(): string[] {
 		return [...this.grants].sort();
-	}
-
-	setGrants(origins: string[]): void {
-		this.grants = new Set(origins);
 	}
 
 	clearGrants(): void {
@@ -182,7 +178,6 @@ export class BrowserSession {
 	async shutdown(): Promise<void> {
 		await this.withLock(async () => {
 			this.closed = true;
-			this.abortLaunch?.abort();
 			await this.teardown();
 			this.closed = false;
 			this.grants.clear();
@@ -502,18 +497,14 @@ export class BrowserSession {
 	async ensureLaunched(signal?: AbortSignal): Promise<void> {
 		if (this.context) return;
 		if (this.closed) throw new Error("Browser session is shutting down");
-		this.abortLaunch = new AbortController();
-		if (signal) {
-			if (signal.aborted) throw new Error("aborted");
-			signal.addEventListener("abort", () => this.abortLaunch?.abort(), { once: true });
-		}
+		if (signal?.aborted) throw new Error("aborted");
 
 		try {
 			const wantPersistent = this.grants.size > 0 || this.forcePersistent;
 			const mode = resolveMode(this.mode);
 			if (mode === "host" && !process.env.DISPLAY) throw new Error("host mode needs DISPLAY");
 			if (mode === "xvfb") this.xvfb = await startXvfb();
-			this.proxy = await startPinProxy();
+			this.proxy = await startPinProxy({ allowTarget: (url) => this.grants.size === 0 || this.grants.has(url.origin) });
 
 			const binary = await findBrowser();
 			const { chromium } = await import("patchright-core");
@@ -528,7 +519,7 @@ export class BrowserSession {
 			const launchOptions = {
 				executablePath: binary.executablePath,
 				headless: mode === "headless",
-				args: ["--disable-webrtc", "--proxy-bypass-list=<-loopback>"],
+				args: browserNetworkArgs(wantPersistent),
 				proxy,
 				env,
 				timeout: DEFAULT_TIMEOUT_MS,
@@ -595,31 +586,24 @@ export class BrowserSession {
 	}
 
 	private async installNetworkGate(context: BrowserContext): Promise<void> {
+		const signal = this.networkAbort.signal;
 		await context.route("**/*", async (route) => {
-			const url = route.request().url();
-			if (isPassthroughRequestUrl(url)) {
-				await route.continue();
-				return;
-			}
+			const request = route.request();
+			const url = request.url();
 			try {
+				if (isPassthroughRequestUrl(url)) { await route.continue(); return; }
+				const decision = classifyGrantedRequest(url, this.grants, request.resourceType());
+				if (decision === "abort") { await route.abort("blockedbyclient"); return; }
+				if (decision === "strip-cookie") {
+					const response = await this.resourceFetch(url, {
+						method: request.method(), headers: await request.allHeaders(), body: request.postDataBuffer(),
+					}, { signal });
+					await route.fulfill(response);
+					return;
+				}
 				await validateBrowserUrl(url, { allowWebSocket: true });
-			} catch {
-				await route.abort("blockedbyclient");
-				return;
-			}
-			const decision = classifyGrantedRequest(url, this.grants, route.request().resourceType());
-			if (decision === "abort") {
-				await route.abort("blockedbyclient");
-				return;
-			}
-			if (decision === "strip-cookie") {
-				const headers = { ...route.request().headers() };
-				delete headers.cookie;
-				delete headers.Cookie;
-				await route.continue({ headers });
-				return;
-			}
-			await route.continue();
+				await route.continue();
+			} catch { await route.abort("blockedbyclient").catch(() => undefined); }
 		});
 	}
 
@@ -679,6 +663,8 @@ export class BrowserSession {
 	}
 
 	private async teardown(): Promise<void> {
+		this.networkAbort.abort();
+		this.networkAbort = new AbortController();
 		const xvfb = this.xvfb;
 		const browser = this.browser;
 		const context = this.context;
@@ -690,7 +676,6 @@ export class BrowserSession {
 		this.pages.clear();
 		this.activeTab = "";
 		this.tabSeq = 0;
-		this.snapshotRev = 0;
 		this.persistent = false;
 		this.cookieSecrets.clear();
 
