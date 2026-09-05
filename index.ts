@@ -10,10 +10,10 @@ import { Type } from "typebox";
 import { type BrowserParams } from "./actions.ts";
 import { ACTIONS, MAX_TEXT_CHARS, MAX_URL_CHARS, MAX_WAIT_MS, TAB_ACTIONS } from "./constants.ts";
 import { parseDisplayMode } from "./display.ts";
-import { parseGrantOrigins } from "./grants.ts";
+import { loginWithUI } from "./login.ts";
 import { BrowserSession } from "./session.ts";
 
-function textResult(text: string, isError = false, details?: Record<string, unknown>) {
+function textResult(text: string, details?: Record<string, unknown>) {
 	const truncation = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
 	let body = truncation.content;
 	if (truncation.truncated) {
@@ -22,7 +22,6 @@ function textResult(text: string, isError = false, details?: Record<string, unkn
 	return {
 		content: [{ type: "text" as const, text: body }],
 		details,
-		isError,
 	};
 }
 
@@ -69,13 +68,10 @@ export default function browserExtension(pi: ExtensionAPI) {
 			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_WAIT_MS, description: "For wait" })),
 		}),
 		async execute(_id, params, signal, onUpdate) {
-			try {
-				onUpdate?.({ content: [{ type: "text", text: `browser ${String((params as BrowserParams).action)}...` }] });
-				const result = await session.withLock(() => session.execute(params as BrowserParams, signal));
-				return textResult(result.content, result.isError === true, result.details);
-			} catch (err) {
-				return textResult(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
-			}
+			onUpdate?.({ content: [{ type: "text", text: `browser ${String((params as BrowserParams).action)}...` }] });
+			// Session errors are already redacted; rejection is Pi's supported error signal.
+			const result = await session.withLock(() => session.execute(params as BrowserParams, signal));
+			return textResult(result.content, result.details);
 		},
 	});
 
@@ -131,58 +127,7 @@ export default function browserExtension(pi: ExtensionAPI) {
 					}
 					if (cmd === "login") {
 						if (!canPrompt(ctx)) throw new Error("login needs interactive UI");
-						const ok = await ctx.ui.confirm(
-							"Isolated browser login",
-							"Open Chromium on your screen with an isolated profile (not your real Chrome). Log in yourself. Then grant origins for this session only.",
-						);
-						if (!ok) {
-							ctx.ui.notify("Login cancelled", "info");
-							return;
-						}
-						session.setMode("host");
-						await session.closeBrowser();
-						session.clearGrants();
-						session.armPersistentProfile();
-						await session.ensureLaunched();
-						try {
-							const done = await ctx.ui.confirm(
-								"Logged in?",
-								"Use the Chromium window to log in. Confirm when finished. The agent still cannot use the profile until you grant origins.",
-							);
-							if (!done) {
-								await session.closeBrowser();
-								session.clearGrants();
-								ctx.ui.notify("Login cancelled", "info");
-								return;
-							}
-							const originText = await ctx.ui.input(
-								"Origins to grant this session (comma-separated hosts)",
-								"https://example.com",
-							);
-							if (!originText) {
-								await session.closeBrowser();
-								session.clearGrants();
-								ctx.ui.notify("Login cancelled", "info");
-								return;
-							}
-							const origins = await parseGrantOrigins(originText);
-							const confirmGrants = await ctx.ui.confirm(
-								"Grant these origins?",
-								`${origins.join(", ")}\n\nThe agent can use the isolated profile for these origins until /reload or /browser logout.`,
-							);
-							if (!confirmGrants) {
-								await session.closeBrowser();
-								session.clearGrants();
-								ctx.ui.notify("Login cancelled", "info");
-								return;
-							}
-							await session.applyGrants(origins);
-							ctx.ui.notify(`Login profile granted for ${origins.join(", ")}. Tabs reset to about:blank.`, "info");
-						} catch (err) {
-							await session.closeBrowser();
-							session.clearGrants();
-							throw err;
-						}
+						await loginWithUI(session, ctx);
 						return;
 					}
 					throw new Error("Usage: /browser status|close|mode xvfb|headless|host|login|logout|grants");

@@ -46,4 +46,6 @@ test("package manifest factory-loads browser tool without launching", async () =
 	);
 	assert.equal(result.extensions.length, 1);
 	assert.deepEqual([...result.extensions[0].tools.keys()], ["browser"]);
+	const tool = (result.extensions[0].tools.get("browser") as any).definition;
+	await assert.rejects(tool.execute("fixture", { action: "not-an-action" }), /Invalid|Unknown|Unsupported/i);
 });

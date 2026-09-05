@@ -58,11 +58,15 @@ Default profile is **ephemeral**. No import from `~/.config/chromium` or Firefox
 
 `/browser login` opens an isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
 
-Do not type passwords into the `browser` tool.
+Do not type passwords into the `browser` tool. Cancelled or failed login—including browser launch failure—closes the attempted login and clears its grants/persistent-profile selection. Snapshot revisions are not reused after close/reopen, and tool failures reject with redacted messages so Pi marks them as errors.
 
 ## Network gate
 
-Every navigation and subresource is checked. Chromium traffic goes through a local pinning proxy: DNS is resolved, private answers are rejected, and the TCP connect uses the validated address (no second lookup). Blocked:
+Every navigation and subresource is checked. Ordinary Chromium traffic goes through a local pinning proxy: DNS is resolved, private answers are rejected, and the TCP connect uses the validated address (no second lookup).
+
+Ungranted public subresources are instead fetched by a stateless, DNS-pinned Node HTTP transport and fulfilled back to Chromium. Chromium ignores Cookie overrides in `route.continue`, so that API is not used to strip cookies. The stateless path has no cookie jar/auth cache: Cookie and Authorization headers are removed and Set-Cookie is not propagated. GET/HEAD requests omit cache/range validators and 304 responses are rejected; write preconditions are retained. Context routing disables Chromium's HTTP cache, including previously stored profile responses. Redirected ungranted resources fail closed: forwarding Location would bypass route interception and resend browser cookies; hiding the redirect would bypass browser URL/CSP/mixed-content checks and change relative-URL resolution. Non-redirecting public subresources still load cookieless. TLS verification remains enabled; a 30-second deadline includes DNS/body decoding, with 32 MiB limits on both wire and decoded bodies and gzip/deflate/Brotli support. Close cancels pending stateless fetches.
+
+With profile grants active, the proxy itself restricts every HTTP request and CONNECT tunnel to granted origins, including ports. This also blocks ungranted redirects and WebSockets that bypass route interception. Grant changes drop existing tunnels; requests awaiting DNS recheck grants before connecting. Persistent-profile Chromium uses HTTP/1.1 to prevent cross-origin HTTP/2 tunnel coalescing; QUIC and non-proxied WebRTC UDP are disabled. Ordinary anonymous sessions retain HTTP/2. The proxy parses each HTTP request instead of trusting the first request on a reused connection. Blocked:
 
 - loopback, RFC1918, link-local, metadata, special-use
 - URL credentials
@@ -78,7 +82,13 @@ npm test          # unit + factory load (needs `pi` on PATH)
 npm run test:unit # no Pi required; this is what CI runs
 ```
 
-No live browser in the default suite. Optional smoke:
+No live browser in the default suite. Run the isolated local Chromium cookie/decoding/TLS/proxy contract tests (synthetic cookies, temporary OpenSSL test certificate, loopback fixtures, no public requests):
+
+```bash
+BROWSER_LOCAL_INTEGRATION=1 xvfb-run -a node --test --experimental-strip-types tests/cookieless.test.ts
+```
+
+Optional public-network smoke:
 
 ```bash
 BROWSER_LIVE=1 node --test --experimental-strip-types tests/live.test.ts
