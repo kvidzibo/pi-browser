@@ -12,10 +12,11 @@ This is anti-automation hardening, not a captcha solver and not a residential-IP
 | `/browser status` | mode, url, origin grants |
 | `/browser mode xvfb\|headless\|host` | display mode (host = your `$DISPLAY`) |
 | `/browser login` | isolated profile on your screen; you log in; then grant origins |
+| `/browser login --from-chromium` | multi-select cookie sites from Linux Chromium's Default profile, then approve import |
 | `/browser logout` | drop grants; next launch is ephemeral |
 | `/browser close` | kill Chromium + Xvfb |
 
-> **Security:** Pi packages run with your full system permissions. After `/browser login`, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs, `file:`, and your real Chrome/Chromium profile are out of reach on purpose. Tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
+> **Security:** Pi packages run with your full system permissions. After `/browser login`, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs and `file:` are blocked. Your real Chrome/Chromium profile is never driven; the optional human-confirmed Chromium import uses a separate cookie snapshot. Tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
 
 ## Quick example
 
@@ -86,11 +87,64 @@ Default mode: **xvfb** on Linux if `Xvfb` exists, else **headless**. `host` is s
 
 ## Cookies / login
 
-Default profile is **ephemeral**. No import from `~/.config/chromium` or Firefox.
+Default profile is **ephemeral**. There is no automatic access to your everyday browser. Cookie import is an explicit `/browser login --from-chromium` option; Firefox is not supported.
 
 `/browser login` opens an isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
 
 Do not type passwords into the `browser` tool. Cancelled or failed login—including browser launch failure—closes the attempted login and clears its grants/persistent-profile selection. Snapshot revisions are not reused after close/reopen, and tool failures reject with redacted messages so Pi marks them as errors.
+
+### Reuse your default Chromium cookies (Linux)
+
+```text
+/reload
+/browser login --from-chromium
+```
+
+In Pi's terminal UI, this opens a **searchable multi-select list** of sites with
+unexpired or session cookies. Nothing is selected automatically:
+
+- Type to filter; **↑/↓** move; **Space** checks/unchecks a site. Mouse clicks work too.
+- Choices are retained while filtering. **Enter** continues to the final import confirmation;
+  **Esc** cancels without changing the current browser session.
+- **Ctrl+N** adds exact origins manually. Cookie domains cannot enumerate every usable
+  subdomain, HTTP origin or custom port; use this for missing entries.
+- For Gmail, check **Gmail** and **Google sign-in** when offered. Otherwise add
+  `https://mail.google.com, https://accounts.google.com` manually.
+
+The list suggests HTTPS origins; cookie presence does **not** prove you are signed in.
+Only checked origins are DNS-validated and offered for import approval. Nothing grants
+all Google sites automatically. RPC clients, or a failed site inventory, retain the
+manual comma-separated origin prompt.
+
+- Requires **Node 22.16+** and `chromium` or `chromium-browser` on PATH. Uses Chromium,
+  not the ordinary Chrome/Edge auto-selection or `PI_BROWSER_EXECUTABLE` override.
+- Reads the standard Linux **Default** profile at `~/.config/chromium/Default`
+  (`CHROME_CONFIG_HOME` / `XDG_CONFIG_HOME` respected). Supports both `Cookies` and
+  `Network/Cookies`. Other profiles and Snap-specific paths are not auto-discovered.
+- Takes a read-only SQLite snapshot, including committed WAL data while Chromium is
+  running. Removes unrelated and expired cookies before launching a separate profile.
+  The source cookie data is not changed; history, passwords, extensions and tabs are
+  not imported. Only cookie encryption metadata is copied from `Local State`.
+- Chromium decrypts its own cookies with your desktop keyring. The keyring may need
+  unlocking. Import never prints cookie values, and the existing browser-result
+  redaction remains active. All normal network/origin gates remain in place.
+- The private copy lives in a mode-0700 `pi-browser-chromium-*` directory under the
+  system temporary directory. `/browser close` retains it for this session;
+  `/browser logout`, `/reload` and normal shutdown delete it. Cleanup failures report
+  the directory and retain a retry handle for `/browser logout` in the current runtime.
+  After an exit/reload or abrupt crash, a leftover protected copy may need manual removal
+  (once Chromium is closed) or system temp cleanup.
+- This is a disk snapshot, not live synchronization. Cookies not yet flushed by
+  Chromium, device-bound sessions, and logins requiring local storage may not transfer;
+  sites may still require sign-in. Re-run the command to refresh the snapshot, or use
+  the ordinary `/browser login` flow.
+
+The model-facing tool has no cookie-extraction action. Running the command permits a
+read-only inventory of cookie host/expiry metadata for the user-only picker. It does
+not query cookie values, access the keyring, inspect history, resolve unselected hosts,
+or send the site list to the model. Copying cookies and granting access still require
+the final confirmation. `/browser status` shows `source=chromium-copy` when the imported
+profile is selected.
 
 ## Network gate
 
@@ -110,15 +164,26 @@ This is not a full intercepting proxy. WebRTC is disabled; residual DNS-rebindin
 ## Tests
 
 ```bash
-npm test          # unit + factory load (needs `pi` on PATH)
-npm run test:unit # no Pi required; this is what CI runs
+xvfb-run -a npm test # unit + native TUI/factory load (needs `pi` and Xvfb on PATH)
+npm run test:unit    # no Pi required; this is what CI runs
 ```
 
-No live browser in the default suite. Run the isolated local Chromium cookie/decoding/TLS/proxy contract tests (synthetic cookies, temporary OpenSSL test certificate, loopback fixtures, no public requests):
+No live browser in the default suite. Cookie-site tests use synthetic SQLite/WAL files;
+the factory suite exercises real Pi TUI components, multi-selection, search, keyboard/mouse
+input, manual origins and narrow-terminal rendering.
+
+Run the isolated local Chromium cookie/decoding/TLS/proxy contract tests (synthetic cookies, temporary OpenSSL test certificate, loopback fixtures, no public requests):
 
 ```bash
-BROWSER_LOCAL_INTEGRATION=1 xvfb-run -a node --test --experimental-strip-types tests/cookieless.test.ts
+BROWSER_LOCAL_INTEGRATION=1 xvfb-run -a node --test --experimental-strip-types tests/cookieless.test.ts tests/chromium-import-live.test.ts
 ```
+
+The cookie-import fixture creates a synthetic encrypted Chromium profile and checks
+persistent/session cookies, source integrity, origin filtering, output redaction and
+logout cleanup. When `gnome-keyring-daemon`, `dbus-daemon` and `gdbus` are installed,
+this also creates a private test D-Bus/keyring and verifies libsecret-encrypted `v11`
+cookies, not just basic-storage `v10` cookies. It does not read your real browser
+cookies or desktop keyring.
 
 Optional public-network smoke:
 

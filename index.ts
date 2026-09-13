@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { type BrowserParams } from "./actions.ts";
 import { ACTIONS, MAX_TEXT_CHARS, MAX_URL_CHARS, MAX_WAIT_MS, TAB_ACTIONS } from "./constants.ts";
 import { parseDisplayMode } from "./display.ts";
-import { loginWithUI } from "./login.ts";
+import { loginFromChromiumWithUI, loginWithUI } from "./login.ts";
 import { BrowserSession } from "./session.ts";
 
 function textResult(text: string, details?: Record<string, unknown>) {
@@ -85,6 +85,7 @@ export default function browserExtension(pi: ExtensionAPI) {
 				{ value: "mode headless", label: "mode headless" },
 				{ value: "mode host", label: "mode host" },
 				{ value: "login", label: "login" },
+				{ value: "login --from-chromium", label: "login --from-chromium (import Default cookies)" },
 				{ value: "logout", label: "logout" },
 				{ value: "grants", label: "grants" },
 			];
@@ -115,8 +116,7 @@ export default function browserExtension(pi: ExtensionAPI) {
 						return;
 					}
 					if (cmd === "logout") {
-						await session.closeBrowser();
-						session.clearGrants();
+						try { await session.closeBrowser(); } finally { await session.clearGrants(); }
 						ctx.ui.notify("Login grants cleared. Next launch is ephemeral.", "info");
 						return;
 					}
@@ -127,10 +127,12 @@ export default function browserExtension(pi: ExtensionAPI) {
 					}
 					if (cmd === "login") {
 						if (!canPrompt(ctx)) throw new Error("login needs interactive UI");
-						await loginWithUI(session, ctx);
+						if (rest.length === 0) await loginWithUI(session, ctx);
+						else if (rest.length === 1 && rest[0] === "--from-chromium") await loginFromChromiumWithUI(session, ctx);
+						else throw new Error("Usage: /browser login [--from-chromium]");
 						return;
 					}
-					throw new Error("Usage: /browser status|close|mode xvfb|headless|host|login|logout|grants");
+					throw new Error("Usage: /browser status|close|mode xvfb|headless|host|login [--from-chromium]|logout|grants");
 				});
 			} catch (err) {
 				ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");

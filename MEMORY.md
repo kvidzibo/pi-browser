@@ -4,3 +4,4 @@
 - A rejected Chromium navigation can still commit chrome-error asynchronously. In isolated tests, perform remaining successful navigations before the deliberately blocked redirect, or use a fresh page rather than racing an immediate retry.
 - Recheck grant/cancellation policy in the I/O caller after awaiting a pin helper: even the helper's final return yields a microtask gap. A queued revocation reproduced late HTTP/CONNECT attempts until the caller rechecked before opening the socket.
 - Assert page-script execution through shared DOM markers in Patchright fixtures. Default evaluate did not see the script's window global, but a documentElement data attribute was visible and made the cache test reliable.
+- Chromium cookie timestamps exceed JavaScript's safe integer range. Bind expiry cutoffs as bigint and use node:sqlite setReadBigInts(true) when reading full cookie rows; encrypted snapshot tests verified exact timestamp preservation.

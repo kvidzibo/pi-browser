@@ -9,6 +9,88 @@ const home = mkdtempSync(join(tmpdir(), "pi-browser-session-"));
 const previousHome = process.env.HOME; process.env.HOME = home;
 after(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(home, { recursive: true, force: true }); });
 
+test("granting an empty login context creates a usable blank tab", async () => {
+	const session = new BrowserSession() as any;
+	const page = { url: () => "about:blank", on: () => {} };
+	session.context = { newPage: async () => page, close: async () => {} };
+	await session.applyGrants(["https://93.184.216.34"]);
+	assert.equal(session.requirePage(), page);
+	await session.closeBrowser();
+});
+
+test("revoking an imported profile keeps its network grants until the browser is closed", async () => {
+	const session = new BrowserSession() as any;
+	let cleaned = false, grantsAtClose: string[] = [];
+	session.grants = new Set(["https://93.184.216.34"]);
+	session.importedProfile = { cleanup: async () => { cleaned = true; } };
+	session.context = { close: async () => { grantsAtClose = session.grantList(); } };
+	await session.clearGrants();
+	assert.deepEqual(grantsAtClose, ["https://93.184.216.34"]);
+	assert.equal(cleaned, true);
+	assert.deepEqual(session.grantList(), []);
+});
+
+for (const outcome of ["copy-error", "launch-error", "no-cookies"]) {
+	test(`failed Chromium import clears grants, deletes its copy and hides source errors: ${outcome}`, async () => {
+		let cleaned = 0;
+		const session = new BrowserSession(undefined, async () => {
+			if (outcome === "copy-error") throw new Error("private-cookie-fixture");
+			return { userDataDir: "/synthetic-only", executablePath: "/synthetic-chromium", cookieCount: 1, cleanup: async () => { cleaned++; } };
+		}) as any;
+		session.ensureLaunched = async () => {
+			if (outcome === "launch-error") throw new Error("private-cookie-fixture");
+			session.context = { cookies: async () => [], close: async () => {} };
+		};
+		await assert.rejects(session.importChromiumCookies(["https://93.184.216.34"]), (error: Error) => {
+			assert.match(error.message, /cookie import failed/); assert.ok(!error.message.includes("private-cookie-fixture")); return true;
+		});
+		assert.deepEqual(session.grantList(), []);
+		assert.equal(session.forcePersistent, false);
+		assert.equal(session.importedProfile, undefined);
+		assert.equal(cleaned, outcome === "copy-error" ? 0 : 1);
+	});
+}
+
+for (const action of ["clearGrants", "shutdown"]) {
+	test(`failed cleanup is reported without source details and can be retried after ${action}`, async () => {
+		const session = new BrowserSession() as any;
+		let attempts = 0;
+		session.grants = new Set(["https://93.184.216.34"]); session.forcePersistent = true;
+		session.importedProfile = { userDataDir: "/synthetic-copy", cleanup: async () => {
+			if (++attempts === 1) throw new Error("private-cleanup-fixture");
+		} };
+		await assert.rejects(session[action](), (error: Error) => {
+			assert.match(error.message, /synthetic-copy.*Retry \/browser logout/);
+			assert.ok(!error.message.includes("private-cleanup-fixture")); return true;
+		});
+		assert.equal(session.importCleanup.size, 1);
+		assert.equal(session.importedProfile, undefined); assert.equal(session.forcePersistent, false);
+		assert.equal(session.closed, false); assert.deepEqual(session.grantList(), []);
+		await session.clearGrants();
+		assert.equal(attempts, 2); assert.equal(session.importCleanup.size, 0);
+	});
+}
+
+test("shutdown attempts cookie cleanup even if browser teardown throws", async () => {
+	const session = new BrowserSession() as any;
+	let cleaned = false;
+	session.importedProfile = { cleanup: async () => { cleaned = true; } };
+	session.teardown = async () => { throw new Error("teardown fixture failed"); };
+	await assert.rejects(session.shutdown(), /teardown fixture failed/);
+	assert.equal(cleaned, true); assert.equal(session.importCleanup.size, 0);
+	assert.equal(session.closed, false); assert.equal(session.importedProfile, undefined);
+});
+
+test("a staging failure still leaves the session a cleanup retry handle", async () => {
+	let cleaned = 0;
+	const session = new BrowserSession(undefined, async (_origins, options) => {
+		options!.registerCleanup!({ userDataDir: "/synthetic-copy", executablePath: "/synthetic-chromium", cookieCount: 0, cleanup: async () => { cleaned++; } });
+		throw new Error("staging fixture failed");
+	});
+	await assert.rejects(session.importChromiumCookies(["https://93.184.216.34"]), /cookie import failed/);
+	assert.equal(cleaned, 1);
+});
+
 test("snapshot revisions never repeat after closing and reopening", async () => {
 	const session = new BrowserSession() as any;
 	const page = { url: () => "https://93.184.216.34/", title: async () => "fixture",
