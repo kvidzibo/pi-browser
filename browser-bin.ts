@@ -37,6 +37,16 @@ function which(name: string, pathEnv: string): string | undefined {
 	return undefined;
 }
 
+// Cookie snapshots must use Chromium, not an auto-selected Chrome/Edge binary with
+// a different desktop keyring identity.
+export async function findChromium(env: NodeJS.ProcessEnv = process.env): Promise<BrowserBinary> {
+	for (const name of ["chromium", "chromium-browser"]) {
+		const path = which(name, env.PATH ?? "");
+		if (path) return { executablePath: path, source: "path" };
+	}
+	throw new Error("Chromium cookie import needs chromium or chromium-browser on PATH");
+}
+
 export async function playwrightChromiumPath(): Promise<string | undefined> {
 	try {
 		const { chromium } = await import("patchright-core");

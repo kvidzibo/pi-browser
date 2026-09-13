@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "patchright-core";
 import { validateAction, type BrowserParams } from "./actions.ts";
 import { findBrowser } from "./browser-bin.ts";
+import { createChromiumCookieImport, IMPORT_BROWSER_ARGS, IMPORT_IGNORE_ARGS, type ChromiumCookieImport } from "./chromium-import.ts";
 import {
 	DEFAULT_TIMEOUT_MS,
 	DEFAULT_VIEWPORT,
@@ -83,9 +84,15 @@ export class BrowserSession {
 	private forcePersistent = false;
 	private proxy: PinProxy | undefined;
 	private cookieSecrets = new Set<string>();
+	private importedProfile: ChromiumCookieImport | undefined;
+	private importCleanup = new Set<ChromiumCookieImport>();
 
 	private readonly resourceFetch: typeof fetchCookieless;
-	constructor(resourceFetch: typeof fetchCookieless = fetchCookieless) { this.resourceFetch = resourceFetch; }
+	private readonly cookieImporter: typeof createChromiumCookieImport;
+	constructor(resourceFetch: typeof fetchCookieless = fetchCookieless, cookieImporter = createChromiumCookieImport) {
+		this.resourceFetch = resourceFetch;
+		this.cookieImporter = cookieImporter;
+	}
 
 	withLock<T>(fn: () => Promise<T>): Promise<T> {
 		return this.lock.run(fn);
@@ -99,9 +106,46 @@ export class BrowserSession {
 		return [...this.grants].sort();
 	}
 
-	clearGrants(): void {
-		this.grants.clear();
-		this.forcePersistent = false;
+	async clearGrants(): Promise<void> {
+		const profile = this.importedProfile;
+		if (profile) this.importCleanup.add(profile);
+		try {
+			// Keep restrictions until the authenticated context/proxy are closed.
+			if (profile) await this.teardown();
+		} finally {
+			this.grants.clear();
+			this.forcePersistent = false;
+			this.importedProfile = undefined;
+			await this.cleanupImports();
+		}
+	}
+
+	private async cleanupImports(): Promise<void> {
+		for (const profile of this.importCleanup) {
+			try { await profile.cleanup(); this.importCleanup.delete(profile); }
+			catch { /* retain the handle for /browser logout or shutdown to retry */ }
+		}
+		if (this.importCleanup.size) {
+			throw new Error(`Temporary Chromium cookie cleanup failed: ${[...this.importCleanup].map((profile) => profile.userDataDir).join(", ")}. Retry /browser logout before reloading, or remove the directory manually once Chromium is closed.`);
+		}
+	}
+
+	// Human-command only. The model tool has no import or raw-cookie action.
+	async importChromiumCookies(origins: string[]): Promise<number> {
+		if (this.context || this.grants.size || this.importedProfile || this.importCleanup.size) throw new Error("Close the browser and clear grants before importing");
+		try {
+			this.importedProfile = await this.cookieImporter(origins, { registerCleanup: (profile) => this.importCleanup.add(profile) });
+			this.importCleanup.add(this.importedProfile);
+			await this.applyGrants(origins);
+			await this.ensureLaunched();
+			const count = (await this.context!.cookies()).length;
+			if (!count) throw new Error("No imported cookies loaded");
+			await this.secretValues();
+			return count;
+		} catch {
+			try { await this.closeBrowser(); } finally { await this.clearGrants(); }
+			throw new Error("Chromium cookie import failed. Check the Default profile, Node 22.16+, and your unlocked desktop keyring. You can also use /browser login.");
+		}
 	}
 
 	armPersistentProfile(): void {
@@ -113,26 +157,14 @@ export class BrowserSession {
 		this.forcePersistent = true;
 		this.proxy?.dropTunnels();
 		if (!this.context) return;
-		const entries = [...this.pages.entries()];
-		let keeper: Page | undefined;
-		for (const [id, page] of entries) {
-			if (!keeper) {
-				keeper = page;
-				this.activeTab = id;
-				continue;
-			}
-			try {
-				await page.close();
-			} catch {
-				// ignore
-			}
-		}
-		if (keeper) {
-			try {
-				await keeper.goto("about:blank", { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
-			} catch {
-				// ignore
-			}
+		// The user may have closed the login tab, or its origin may now be denied.
+		// Create a fresh blank keeper before closing old tabs instead of reusing one.
+		const previous = [...this.pages.entries()];
+		const keeper = await this.context.newPage();
+		this.adoptPage(keeper, true);
+		for (const [id, page] of previous) {
+			try { await page.close(); } catch { /* already closed */ }
+			this.pages.delete(id);
 		}
 		this.invalidateSnapshot();
 	}
@@ -143,7 +175,7 @@ export class BrowserSession {
 		const grants = this.grants.size ? this.grantList().join(" ") : "(none)";
 		const running = this.context ? "up" : "down";
 		const urlText = url ? sanitizeWithSecrets(redactUrl(url), [...this.cookieSecrets]) : "-";
-		return `browser ${running} mode=${mode} persistent=${this.persistent} url=${urlText} grants=${grants}`;
+		return `browser ${running} mode=${mode} persistent=${this.persistent} source=${this.importedProfile ? "chromium-copy" : "isolated"} url=${urlText} grants=${grants}`;
 	}
 
 	async reapStale(): Promise<void> {
@@ -178,10 +210,12 @@ export class BrowserSession {
 	async shutdown(): Promise<void> {
 		await this.withLock(async () => {
 			this.closed = true;
-			await this.teardown();
-			this.closed = false;
-			this.grants.clear();
-			this.mode = "auto";
+			try {
+				try { await this.teardown(); } finally { await this.clearGrants(); }
+			} finally {
+				this.closed = false;
+				this.mode = "auto";
+			}
 		});
 	}
 
@@ -504,9 +538,12 @@ export class BrowserSession {
 			const mode = resolveMode(this.mode);
 			if (mode === "host" && !process.env.DISPLAY) throw new Error("host mode needs DISPLAY");
 			if (mode === "xvfb") this.xvfb = await startXvfb();
-			this.proxy = await startPinProxy({ allowTarget: (url) => this.grants.size === 0 || this.grants.has(url.origin) });
+			// Capture import mode so even a failed teardown cannot turn a cookie-bearing
+			// proxy into an unrestricted anonymous proxy when its grants are revoked.
+			const imported = Boolean(this.importedProfile);
+			this.proxy = await startPinProxy({ allowTarget: (url) => (!imported && this.grants.size === 0) || this.grants.has(url.origin) });
 
-			const binary = await findBrowser();
+			const binary = this.importedProfile ?? await findBrowser();
 			const { chromium } = await import("patchright-core");
 			const env: Record<string, string> = { ...process.env } as Record<string, string>;
 			if (this.xvfb) env.DISPLAY = this.xvfb.display;
@@ -519,7 +556,8 @@ export class BrowserSession {
 			const launchOptions = {
 				executablePath: binary.executablePath,
 				headless: mode === "headless",
-				args: browserNetworkArgs(wantPersistent),
+				args: [...browserNetworkArgs(wantPersistent), ...(this.importedProfile ? IMPORT_BROWSER_ARGS : [])],
+				ignoreDefaultArgs: this.importedProfile ? IMPORT_IGNORE_ARGS : undefined,
 				proxy,
 				env,
 				timeout: DEFAULT_TIMEOUT_MS,
@@ -534,7 +572,7 @@ export class BrowserSession {
 			};
 
 			if (wantPersistent) {
-				const userDataDir = ensurePrivateDir(join(piAgentDir(), PROFILE_DIR_NAME));
+				const userDataDir = this.importedProfile?.userDataDir ?? ensurePrivateDir(join(piAgentDir(), PROFILE_DIR_NAME));
 				this.context = await chromium.launchPersistentContext(userDataDir, {
 					...launchOptions,
 					...contextOptions,
@@ -591,6 +629,7 @@ export class BrowserSession {
 			const request = route.request();
 			const url = request.url();
 			try {
+				if (signal.aborted) { await route.abort("blockedbyclient"); return; }
 				if (isPassthroughRequestUrl(url)) { await route.continue(); return; }
 				const decision = classifyGrantedRequest(url, this.grants, request.resourceType());
 				if (decision === "abort") { await route.abort("blockedbyclient"); return; }
@@ -657,7 +696,7 @@ export class BrowserSession {
 			ownerPid: process.pid,
 			xvfbPid: this.xvfb?.pid,
 			display: this.xvfb?.display,
-			userDataDir: this.persistent ? join(piAgentDir(), PROFILE_DIR_NAME) : undefined,
+			userDataDir: this.persistent ? this.importedProfile?.userDataDir ?? join(piAgentDir(), PROFILE_DIR_NAME) : undefined,
 		};
 		writeFileSync(join(dir, `state-${process.pid}.json`), JSON.stringify(state), { mode: 0o600 });
 	}

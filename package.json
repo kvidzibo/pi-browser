@@ -32,6 +32,7 @@
   "files": [
     "actions.ts",
     "browser-bin.ts",
+    "chromium-import.ts",
     "constants.ts",
     "cookieless.ts",
     "display.ts",
@@ -42,6 +43,7 @@
     "pin-proxy.ts",
     "redact.ts",
     "session.ts",
+    "site-picker.ts",
     "snapshot.ts",
     "LICENSE",
     "README.md"
@@ -49,6 +51,7 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   }
 }
