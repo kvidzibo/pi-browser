@@ -1,6 +1,9 @@
 export const MAX_URL_CHARS = 2_048;
 export const MAX_TEXT_CHARS = 4_000;
 export const MAX_WAIT_MS = 30_000;
+export const MAX_COOKIE_ORIGINS = 8;
+export const MAX_COOKIE_NAMES = 32;
+export const MAX_COOKIE_NAME_CHARS = 256;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function browserNetworkArgs(persistent: boolean): string[] {

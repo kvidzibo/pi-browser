@@ -49,6 +49,20 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.deepEqual([...result.extensions[0].tools.keys()], ["browser"]);
 	const tool = (result.extensions[0].tools.get("browser") as any).definition;
 	await assert.rejects(tool.execute("fixture", { action: "not-an-action" }), /Invalid|Unknown|Unsupported/i);
+	assert.ok(tool.parameters.properties.action.enum.includes("request_cookies"));
+	assert.equal(tool.parameters.properties.origins.maxItems, 8);
+	assert.equal(tool.parameters.properties.cookieNames.minItems, 1);
+	assert.match(tool.promptGuidelines.join(" "), /request_cookies/);
+	const request = { action: "request_cookies", origins: ["https://93.184.216.34"], cookieNames: ["SID"] };
+	await assert.rejects(tool.execute("fixture", request, undefined, undefined, { hasUI: false, mode: "print" }), /interactive approval/);
+	let prompted = 0;
+	const denied = await tool.execute("fixture", request, undefined, undefined, { hasUI: true, mode: "rpc", ui: {
+		confirm: async (_title: string, body: string) => { prompted++; assert.match(body, /93\.184\.216\.34/); assert.match(body, /SID/); return false; },
+	} });
+	assert.equal(prompted, 1);
+	assert.equal(denied.details.status, "denied");
+	const cancelled = await tool.execute("fixture", request, AbortSignal.abort(), undefined, { hasUI: true, mode: "tui" });
+	assert.equal(cancelled.details.status, "cancelled");
 	assert.deepEqual([...result.extensions[0].commands.keys()], ["browser"]);
 	const command = result.extensions[0].commands.get("browser");
 	assert.ok(command.getArgumentCompletions("login").some((item: any) => item.value === "login --from-chromium"));
@@ -59,6 +73,40 @@ test("package manifest factory-loads browser tool without launching", async () =
 	messages.length = 0;
 	await command.handler("login --from-chromium extra", { ...ctx, hasUI: true, mode: "tui" });
 	assert.deepEqual(messages, ["Usage: /browser login [--from-chromium]"]);
+});
+
+test("native cookie consent: full scope is scrollable, Deny is default, and only reviewed requests can be allowed", async (t) => {
+	const loaded = await loadWithPi([join(REPO, "tests", "cookie-consent.fixture.ts")]);
+	assert.deepEqual(loaded.errors, []);
+	const tool = (loaded.extensions[0].tools.get("cookie_consent_fixture") as any).definition;
+	for (const [name, params, expected] of [
+		["maximum request can be fully reviewed and approved", { large: true, keys: ["read-all", "\t", "\r"] }, "granted"],
+		["Enter defaults to Deny after reviewing", { keys: ["read-all", "\r"] }, "denied"],
+		["Tab cannot enable Allow before all pages are displayed", { large: true, keys: ["\t", "\r"] }, "denied"],
+		["Escape denies without reading", { large: true, keys: ["\x1b"] }, "denied"],
+		["abort closes the custom dialog without granting", { large: true, keys: ["abort"] }, "cancelled"],
+		["remapped pagination and confirm", { large: true, remap: true, keys: ["read-all", "\t", "\x1b\r"] }, "granted"],
+		["minimum supported terminal can review all details", { width: 40, rows: 13, keys: ["read-all", "\t", "\r"] }, "granted"],
+		["tiny terminal cannot approve", { width: 1, rows: 7, keys: ["\t", "\r"] }, "denied"],
+		["resize resets previous approval selection", { keys: ["read-all", "\t", "resize:40:12", "\r"] }, "denied"],
+		["unavailable custom UI fails closed", { unsupported: true, keys: [] }, "denied"],
+	] as const) {
+		await t.test(name, async () => {
+			const details = (await tool.execute("fixture", params)).details;
+			assert.equal(details.result.details.status, expected);
+			assert.ok(!JSON.stringify(details.result).includes("synthetic-private-reason"));
+			for (const frame of details.frames) {
+				assert.ok(frame.widths.every((width: number) => width <= frame.width), `overflow at width ${frame.width}`);
+				assert.ok(frame.lines.length <= (frame.width >= 40 && frame.rows >= 13 ? frame.rows - 6 : frame.rows), "dialog must leave room for Pi's footer");
+			}
+			if (expected === "granted") {
+				assert.deepEqual(details.imported, { origins: details.origins, cookieNames: details.cookieNames });
+				assert.equal(details.viewedLines, details.totalLines, "every disclosure line must have been visible");
+				const displayed = details.viewedText.replace(/\s/g, "");
+				for (const value of [...details.origins, ...details.cookieNames]) assert.ok(displayed.includes(value), "full origins and names must be reviewable, not truncated");
+			} else assert.equal(details.imported, undefined);
+		});
+	}
 });
 
 test("native Pi multi-select UI: keyboard, filtering, scrolling, mouse, sizing and manual origins", async (t) => {

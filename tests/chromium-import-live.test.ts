@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { findChromium } from "../browser-bin.ts";
 import { createChromiumCookieImport, IMPORT_BROWSER_ARGS, IMPORT_IGNORE_ARGS } from "../chromium-import.ts";
 import { BrowserSession } from "../session.ts";
+import { requestCookieAccessWithUI } from "../cookie-access.ts";
 import { privateKeyring } from "./keyring-fixture.ts";
 
 for (const keyring of [false, true]) test(`local Chromium import: persistent/session cookies, redaction, relaunch and cleanup (keyring=${keyring})`, {
@@ -29,8 +30,8 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 	let isolatedKeyring: Awaited<ReturnType<typeof privateKeyring>> | undefined;
 	let source: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
 	let importedDir = "";
-	const session = new BrowserSession(undefined, async (origins) => {
-		const imported = await createChromiumCookieImport(origins, { sourceRoot: root, executablePath, tempRoot: dir });
+	const session = new BrowserSession(undefined, async (origins, options) => {
+		const imported = await createChromiumCookieImport(origins, { ...options, sourceRoot: root, executablePath, tempRoot: dir });
 		importedDir = imported.userDataDir;
 		return imported;
 	});
@@ -80,6 +81,22 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 		await session.ensureLaunched();
 		context = (session as any).context;
 		assert.equal((await context.cookies()).length, 2, "close/reopen must retain session cookies without recopying the source");
+		const params = { origins: ["https://93.184.216.34"], cookieNames: ["session"] };
+		const denied = await session.withLock(() => requestCookieAccessWithUI(session,
+			{ hasUI: true, mode: "rpc", ui: { confirm: async () => false } } as any, params));
+		assert.equal(denied.details?.status, "denied");
+		assert.equal((session as any).context, context, "denial must not close or replace the active browser");
+		const previousCopy = importedDir;
+		const approved = await session.withLock(() => requestCookieAccessWithUI(session,
+			{ hasUI: true, mode: "rpc", ui: { confirm: async () => true } } as any, params));
+		assert.equal(approved.details?.status, "granted");
+		assert.equal(approved.details?.cookieCount, 1);
+		assert.ok(!JSON.stringify(approved).includes("fixture-secret"));
+		assert.deepEqual(session.grantList(), params.origins);
+		context = (session as any).context;
+		assert.deepEqual((await context.cookies()).map((cookie: any) => cookie.name), ["session"]);
+		assert.notEqual(importedDir, previousCopy);
+		await assert.rejects(stat(previousCopy), { code: "ENOENT" });
 		await session.clearGrants();
 		assert.deepEqual(session.grantList(), []);
 		await assert.rejects(stat(importedDir), { code: "ENOENT" });
