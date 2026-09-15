@@ -200,6 +200,23 @@ The same Linux/Default-profile, keyring and transfer limitations below apply. Th
 model must not retry a denied request without your direction. Cookie access permits
 signed-in browser actions, not just reading public pages; approve only trusted tasks.
 
+### Import failures
+
+Known failures report a specific, fixed message after approval:
+
+- **Profile directory not found:** open Chromium and sign in to its Default profile.
+- **No cookie database:** sign in using Chromium's Default profile first.
+- **No matching cookies:** no unexpired or session cookies matched the approved
+  origins and optional name filter. Check the scope; Chrome's separate profile is
+  not used. A test domain such as `example.com` may have nothing to import.
+- **No imported cookies loaded:** Chromium opened the snapshot but loaded no cookies.
+  Check the unlocked desktop keyring and profile compatibility; this does not
+  establish that the keyring is the cause.
+
+Other browser, SQLite and keyring failures remain generic to avoid exposing cookie
+values, source paths or unrelated profile details. Cancellation and cleanup failures
+still take precedence over the import reason. Use `/browser login` as an alternative.
+
 ### Reuse your default Chromium cookies manually (Linux)
 
 ```text

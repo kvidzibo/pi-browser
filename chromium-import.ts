@@ -12,6 +12,22 @@ export const IMPORT_IGNORE_ARGS = ["--password-store=basic", "--use-mock-keychai
 export const IMPORT_BROWSER_ARGS = ["--restore-last-session"];
 const MAX_DATABASE_BYTES = 128 * 1024 * 1024;
 
+const COOKIE_IMPORT_MESSAGES = {
+	profile_missing: "Chromium's profile directory was not found. Open Chromium and sign in to its Default profile, or use /browser login.",
+	cookie_database_missing: "No cookie database in Chromium's Default profile. Sign in there first, or use /browser login.",
+	no_matching_cookies: "No matching cookies in Chromium's Default profile for the approved origins and optional cookie-name filter. Cookies may be absent or expired. Check the requested scope or use /browser login.",
+	cookies_not_loaded: "No imported cookies loaded from the snapshot. Check the unlocked desktop keyring and Chromium profile compatibility, or use /browser login.",
+};
+
+/** Only fixed, known reasons may cross the import/session/tool privacy boundaries. */
+export class CookieImportError extends Error {
+	readonly code: keyof typeof COOKIE_IMPORT_MESSAGES;
+	constructor(code: keyof typeof COOKIE_IMPORT_MESSAGES) {
+		super(`Chromium cookie import failed: ${Object.hasOwn(COOKIE_IMPORT_MESSAGES, code) ? COOKIE_IMPORT_MESSAGES[code] : "The import could not be completed."}`);
+		this.code = code;
+	}
+}
+
 export type ChromiumCookieImport = {
 	userDataDir: string;
 	executablePath: string;
@@ -56,11 +72,14 @@ async function regularFile(root: string, name: string, maxBytes: number): Promis
 async function cookieSource(sourceRoot?: string) {
 	let root: string;
 	try { root = await realpath(sourceRoot ?? defaultChromiumRoot()); }
-	catch { throw new Error("Default Chromium profile not found. Open Chromium and sign in first, or use /browser login."); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new CookieImportError("profile_missing");
+		throw new Error("Could not read Chromium's Default profile.");
+	}
 	const cookieName = await regularFile(root, "Default/Network/Cookies", MAX_DATABASE_BYTES)
 		? "Default/Network/Cookies" : "Default/Cookies";
 	const sourcePath = await regularFile(root, cookieName, MAX_DATABASE_BYTES);
-	if (!sourcePath) throw new Error("No cookie database in Chromium's Default profile. Sign in there first.");
+	if (!sourcePath) throw new CookieImportError("cookie_database_missing");
 	await regularFile(root, `${cookieName}-wal`, MAX_DATABASE_BYTES);
 	await regularFile(root, `${cookieName}-shm`, MAX_DATABASE_BYTES);
 	return { root, cookieName, sourcePath };
@@ -179,7 +198,7 @@ export async function createChromiumCookieImport(
 			// Remove deleted cookies from free pages as well, before Chromium opens the copy.
 			copy.exec("VACUUM");
 		} finally { copy.close(); }
-		if (!cookieCount) throw new Error("No matching cookies");
+		if (!cookieCount) throw new CookieImportError("no_matching_cookies");
 		await chmod(destination, 0o600);
 
 		// Only encryption metadata, not account details, history, extensions, preferences,
@@ -191,9 +210,10 @@ export async function createChromiumCookieImport(
 		}), { mode: 0o600 });
 		profile.cookieCount = cookieCount;
 		return profile;
-	} catch {
+	} catch (error) {
 		try { await cleanup(); }
 		catch { throw new Error(`Temporary Chromium cookie cleanup failed: ${dir}. Retry /browser logout.`); }
+		if (error instanceof CookieImportError) throw new CookieImportError(error.code);
 		// Do not relay SQLite, keyring or profile-parser errors containing source data.
 		throw new Error("Could not import matching Chromium cookies. Requires Node >=22.19.0 and a readable Default profile with unexpired cookies for the approved sites. If Chromium is busy, close it and retry.");
 	}

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BrowserSession } from "../session.ts";
+import { CookieImportError, createChromiumCookieImport } from "../chromium-import.ts";
 import { requestCookieAccessWithUI, type CookieAccessParams } from "../cookie-access.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi-browser-session-"));
@@ -47,7 +48,13 @@ for (const outcome of ["copy-error", "launch-error", "no-cookies"]) {
 			session.context = { cookies: async () => [], close: async () => {} };
 		};
 		await assert.rejects(session.importChromiumCookies(["https://93.184.216.34"]), (error: Error) => {
-			assert.match(error.message, /cookie import failed/); assert.ok(!error.message.includes("private-cookie-fixture")); return true;
+			assert.match(error.message, /cookie import failed/); assert.ok(!error.message.includes("private-cookie-fixture"));
+			if (outcome === "no-cookies") {
+				assert.ok(error instanceof CookieImportError);
+				assert.equal(error.code, "cookies_not_loaded");
+				assert.match(error.message, /No imported cookies loaded/);
+			} else assert.ok(!(error instanceof CookieImportError));
+			return true;
 		});
 		assert.deepEqual(session.grantList(), []);
 		assert.equal(session.forcePersistent, false);
@@ -56,6 +63,58 @@ for (const outcome of ["copy-error", "launch-error", "no-cookies"]) {
 		assert.equal(cleaned, outcome === "copy-error" ? 0 : 1);
 	});
 }
+
+for (const [code, message] of [
+	["profile_missing", /profile directory was not found/],
+	["cookie_database_missing", /No cookie database/],
+	["no_matching_cookies", /No matching cookies/],
+] as const) test(`known cookie failures survive importer/session/model boundaries (${code})`, async () => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const temp = mkdtempSync(join(home, "empty-cookies-")), root = join(temp, "chromium");
+	if (code !== "profile_missing") mkdirSync(join(root, "Default"), { recursive: true });
+	if (code === "no_matching_cookies") {
+		const db = new DatabaseSync(join(root, "Default", "Cookies"));
+		try {
+			db.exec("CREATE TABLE cookies(host_key TEXT, name TEXT, has_expires INTEGER, expires_utc INTEGER)");
+		} finally { db.close(); }
+	}
+	const before = readdirSync(temp);
+	const session = new BrowserSession(undefined, (origins, options) => createChromiumCookieImport(origins, {
+		...options, sourceRoot: root, tempRoot: temp, executablePath: "/synthetic-chromium", platform: "linux",
+	}));
+	let prompts = 0;
+	try {
+		await assert.rejects(requestCookieAccessWithUI(session, { hasUI: true, mode: "rpc", ui: {
+			confirm: async () => { prompts++; return true; },
+		} } as any, { origins: ["https://93.184.216.34"] }), (error: Error) => {
+			assert.ok(error instanceof CookieImportError);
+			assert.equal(error.code, code);
+			assert.match(error.message, message);
+			assert.ok(!error.message.includes(temp), "private source/copy paths must not reach the model");
+			return true;
+		});
+		assert.equal(prompts, 1);
+		assert.deepEqual(session.grantList(), []);
+		assert.equal(session.hasCookieAccess(["https://93.184.216.34"]), false);
+		assert.deepEqual(readdirSync(temp), before, "the failed copy must be removed");
+	} finally { await session.shutdown(); rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("session reconstructs known errors rather than forwarding attached private details", async () => {
+	const failure = new CookieImportError("no_matching_cookies");
+	failure.message = "private-cookie-fixture";
+	failure.cause = new Error("private-keyring-fixture");
+	const session = new BrowserSession(undefined, async () => { throw failure; });
+	await assert.rejects(session.importChromiumCookies(["https://93.184.216.34"]), (error: Error) => {
+		assert.ok(error instanceof CookieImportError);
+		assert.notEqual(error, failure);
+		assert.equal(error.message, new CookieImportError("no_matching_cookies").message);
+		assert.equal(error.cause, undefined);
+		assert.ok(!String(error.stack).includes("private-"));
+		return true;
+	});
+	assert.deepEqual(session.grantList(), []);
+});
 
 for (const action of ["clearGrants", "shutdown"]) {
 	test(`failed cleanup is reported without source details and can be retried after ${action}`, async () => {

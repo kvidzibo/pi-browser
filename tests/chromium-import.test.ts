@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { cookieHostMatches, createChromiumCookieImport, defaultChromiumRoot, IMPORT_IGNORE_ARGS, listChromiumCookieSites, parseCookieNames } from "../chromium-import.ts";
+import { CookieImportError, cookieHostMatches, createChromiumCookieImport, defaultChromiumRoot, IMPORT_IGNORE_ARGS, listChromiumCookieSites, parseCookieNames } from "../chromium-import.ts";
 import { MAX_COOKIE_NAMES, MAX_COOKIE_NAME_CHARS } from "../constants.ts";
 
 const future = BigInt(Date.now()) * 1000n + 11644473600000000n + 86400000000n;
@@ -117,13 +117,43 @@ test("discovery rejects symlinked databases and unexpected schemas without sourc
 test("no matching cookies and malformed encryption metadata clean up without echoing secrets", async () => {
 	await fixture(async (root, _path, _db, temp) => {
 		const before = await readdir(temp);
-		await assert.rejects(createChromiumCookieImport(["https://unrelated.test"], options(root, temp)), /Could not import/);
+		await assert.rejects(createChromiumCookieImport(["https://unrelated.test"], options(root, temp)), /No matching cookies/);
 		assert.deepEqual(await readdir(temp), before);
 		await writeFile(join(root, "Local State"), "private-secret-invalid-json");
 		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], options(root, temp)), (err: Error) => {
+			assert.match(err.message, /Could not import/);
 			assert.ok(!err.message.includes("private-secret")); return true;
 		});
 		assert.deepEqual(await readdir(temp), before);
+	});
+});
+
+test("expired-only cookies report no match without changing the source or retaining the copy", async () => {
+	await fixture(async (root, path, _db, temp) => {
+		const before = await readFile(path), walBefore = await readFile(`${path}-wal`), files = await readdir(temp);
+		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], { ...options(root, temp), cookieNames: ["expired"] }), (error: Error) => {
+			assert.ok(error instanceof CookieImportError);
+			assert.equal(error.code, "no_matching_cookies");
+			assert.match(error.message, /No matching cookies.*absent or expired/);
+			assert.ok(!error.message.includes("excluded-expired-secret"));
+			return true;
+		});
+		assert.deepEqual(await readFile(path), before);
+		assert.deepEqual(await readFile(`${path}-wal`), walBefore);
+		assert.deepEqual(await readdir(temp), files);
+	});
+});
+
+test("unreadable profile paths are not mislabeled as missing and remain private", async () => {
+	await fixture(async (_root, _path, _db, temp) => {
+		const loop = join(temp, "private-profile-loop");
+		await symlink(loop, loop);
+		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], options(loop, temp)), (error: Error) => {
+			assert.ok(!(error instanceof CookieImportError));
+			assert.match(error.message, /Could not read Chromium's Default profile/);
+			assert.ok(!error.message.includes("private-profile-loop"));
+			return true;
+		});
 	});
 });
 
@@ -150,7 +180,7 @@ test("name allowlist is exact, intersects the domain scope, and vacuums excluded
 			assert.deepEqual(await readFile(`${path}-wal`), walBefore);
 		} finally { await imported.cleanup(); }
 		const files = await readdir(temp);
-		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], { ...options(root, temp), cookieNames: ["missing"] }), /Could not import/);
+		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], { ...options(root, temp), cookieNames: ["missing"] }), /No matching cookies/);
 		assert.deepEqual(await readdir(temp), files);
 	});
 });

@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseCookieNames } from "./chromium-import.ts";
+import { CookieImportError, parseCookieNames } from "./chromium-import.ts";
 import { MAX_COOKIE_ORIGINS, MAX_URL_CHARS } from "./constants.ts";
 import { confirmCookieAccessWithUI } from "./cookie-consent.ts";
 import { normalizeHostname, validateBrowserUrl } from "./gate.ts";
@@ -90,10 +90,11 @@ export async function requestCookieAccessWithUI(
 			content: `Cookie access granted for ${origins.join(", ")}. Loaded ${count} cookies into an isolated profile. Previous grants replaced. Ready for browser navigation.`,
 			details: { status: "granted", origins, cookieNames, cookieCount: count },
 		};
-	} catch {
+	} catch (error) {
 		try { try { await session.closeBrowser(); } finally { await session.clearGrants(); } }
 		catch { throw new Error("Cookie access cleanup failed. Retry /browser logout before requesting access again."); }
 		if (signal?.aborted) return notGranted("cancelled");
+		if (error instanceof CookieImportError) throw new CookieImportError(error.code);
 		// Never relay browser/SQLite/keyring errors or source details to the model.
 		throw new Error("Chromium cookie access failed. Check Node >=22.19.0, matching Default-profile cookies and the unlocked desktop keyring, or use /browser login.");
 	}

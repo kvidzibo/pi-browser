@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { requestCookieAccessWithUI as requestCookieAccess } from "../cookie-access.ts";
 import { MAX_COOKIE_ORIGINS } from "../constants.ts";
+import { CookieImportError } from "../chromium-import.ts";
 
 // Transaction tests inject dialogs without Pi peers; the native factory suite tests
 // the real scrollable TUI, including its approval path with a synthetic session.
@@ -173,6 +174,61 @@ for (const stage of ["before", "dialog", "clear", "import"]) test(`cancellation 
 	assert.ok(!JSON.stringify(result).includes("private-abort-reason"));
 	assert.deepEqual(f.grants(), stage === "before" || stage === "dialog" ? ["https://previous.example"] : []);
 	assert.equal(f.calls.includes("import"), stage === "import");
+});
+
+for (const code of ["profile_missing", "cookie_database_missing", "no_matching_cookies", "cookies_not_loaded"] as const) {
+	test(`known import reason reaches the model without raw error details (${code})`, async () => {
+		const f = fixture();
+		const failure = new CookieImportError(code);
+		failure.message = "private-cookie-value";
+		failure.cause = new Error("private-keyring-detail");
+		f.session.importChromiumCookies = async () => { f.calls.push("import"); throw failure; };
+		await assert.rejects(requestCookieAccessWithUI(f.session, f.ctx, f.params, f.controller.signal), (error: Error) => {
+			assert.ok(error instanceof CookieImportError);
+			assert.notEqual(error, failure);
+			assert.equal(error.code, code);
+			assert.equal(error.message, new CookieImportError(code).message);
+			assert.equal(error.cause, undefined);
+			assert.ok(!String(error.stack).includes("private-"));
+			return true;
+		});
+		assert.deepEqual(f.calls, ["confirm", "close", "clear", "import", "close", "clear"]);
+		assert.deepEqual(f.grants(), []);
+	});
+}
+
+test("an arbitrary error carrying a known code is not trusted or relayed", async () => {
+	const f = fixture();
+	f.session.importChromiumCookies = async () => { throw Object.assign(new Error("private-cookie-value"), { code: "no_matching_cookies" }); };
+	await assert.rejects(requestCookieAccessWithUI(f.session, f.ctx, f.params, f.controller.signal), (error: Error) => {
+		assert.ok(!(error instanceof CookieImportError));
+		assert.match(error.message, /cookie access failed/);
+		assert.ok(!error.message.includes("private-cookie-value"));
+		return true;
+	});
+	assert.deepEqual(f.grants(), []);
+});
+
+for (const outcome of ["cancelled", "cleanup-failed"] as const) test(`known import errors cannot hide ${outcome}`, async () => {
+	const f = fixture();
+	f.session.importChromiumCookies = async () => {
+		f.calls.push("import");
+		if (outcome === "cancelled") f.controller.abort("private-abort-reason");
+		throw new CookieImportError("no_matching_cookies");
+	};
+	if (outcome === "cleanup-failed") f.session.clearGrants = async () => {
+		if (f.calls.includes("import")) throw new Error("private-cleanup-detail"); f.calls.push("clear");
+	};
+	const pending = requestCookieAccessWithUI(f.session, f.ctx, f.params, f.controller.signal);
+	if (outcome === "cancelled") {
+		assert.equal((await pending).details?.status, "cancelled");
+		assert.deepEqual(f.grants(), []);
+	} else await assert.rejects(pending, (error: Error) => {
+		assert.ok(!(error instanceof CookieImportError));
+		assert.match(error.message, /cleanup failed.*browser logout/);
+		assert.ok(!error.message.includes("private-"));
+		return true;
+	});
 });
 
 for (const cleanupFails of [false, true]) test(`failed import hides source errors and cleans up (cleanup failure=${cleanupFails})`, async () => {
