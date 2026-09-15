@@ -6,8 +6,12 @@ import { after, test } from "node:test";
 import { BrowserSession } from "../session.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi-browser-session-"));
-const previousHome = process.env.HOME; process.env.HOME = home;
-after(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(home, { recursive: true, force: true }); });
+const previous = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
+Object.assign(process.env, { HOME: home, PI_CODING_AGENT_DIR: join(home, "agent") });
+after(() => {
+	for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+	rmSync(home, { recursive: true, force: true });
+});
 
 test("granting an empty login context creates a usable blank tab", async () => {
 	const session = new BrowserSession() as any;
@@ -129,10 +133,12 @@ test("the browser driver cannot bypass the cookie permission UI", async () => {
 
 test("snapshot revisions never repeat after closing and reopening", async () => {
 	const session = new BrowserSession() as any;
-	const page = { url: () => "https://93.184.216.34/", title: async () => "fixture",
+	const page = { url: () => "https://93.184.216.34/", title: async () => "fixture", on: () => {}, mainFrame: () => ({}),
 		locator: () => ({ ariaSnapshot: async () => "- button [ref=e1]" }) };
+	session.adoptPage(page, true);
 	const before = await session.snapshotResult(page);
 	await session.closeBrowser();
+	session.adoptPage(page, true);
 	const after = await session.snapshotResult(page);
 	assert.ok(after.details.snapshot > before.details.snapshot);
 	assert.throws(() => session.locator(page, `r${before.details.snapshot}e1`), /[Ss]tale/);

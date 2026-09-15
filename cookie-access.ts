@@ -63,8 +63,13 @@ export async function requestCookieAccessWithUI(
 	// command input, which could turn one displayed destination into multiple grants.
 	for (const origin of requestedOrigins) {
 		if (signal?.aborted) return notGranted("cancelled");
-		const validated = await validateBrowserUrl(origin);
-		if (validated.origin !== origin) throw new Error("Cookie access origin changed during validation");
+		try {
+			const validated = await validateBrowserUrl(origin, { signal });
+			if (validated.origin !== origin) throw new Error("Cookie access origin changed during validation");
+		} catch (error) {
+			if (signal?.aborted) return notGranted("cancelled");
+			throw error;
+		}
 	}
 	const origins = requestedOrigins;
 	if (signal?.aborted) return notGranted("cancelled");
@@ -83,6 +88,6 @@ export async function requestCookieAccessWithUI(
 		catch { throw new Error("Cookie access cleanup failed. Retry /browser logout before requesting access again."); }
 		if (signal?.aborted) return notGranted("cancelled");
 		// Never relay browser/SQLite/keyring errors or source details to the model.
-		throw new Error("Chromium cookie access failed. Check Node 22.16+, matching Default-profile cookies and the unlocked desktop keyring, or use /browser login.");
+		throw new Error("Chromium cookie access failed. Check Node >=22.19.0, matching Default-profile cookies and the unlocked desktop keyring, or use /browser login.");
 	}
 }

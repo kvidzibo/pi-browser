@@ -1,5 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import net from "node:net";
+import { abortable, checkCancelled } from "./cancellation.ts";
+import { DEFAULT_TIMEOUT_MS } from "./constants.ts";
 
 export type LookupAddress = { address: string; family: number };
 export type Lookup = (hostname: string) => Promise<LookupAddress[]>;
@@ -114,12 +116,15 @@ export function isAboutBlank(raw: string): boolean {
 export type ValidateOptions = {
 	lookup?: Lookup;
 	allowWebSocket?: boolean;
+	signal?: AbortSignal;
+	timeoutMs?: number;
 };
 
 export async function resolvePinnedTarget(
 	rawUrl: string | URL,
 	options: ValidateOptions = {},
 ): Promise<{ url: URL; address: LookupAddress }> {
+	checkCancelled(options.signal);
 	if (typeof rawUrl === "string" && isAboutBlank(rawUrl)) {
 		return { url: new URL("about:blank"), address: { address: "0.0.0.0", family: 4 } };
 	}
@@ -156,9 +161,14 @@ export async function resolvePinnedTarget(
 	}
 
 	let addresses: LookupAddress[];
+	const deadline = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+	const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
 	try {
-		addresses = await (options.lookup ?? ((host: string) => dnsLookup(host, { all: true, verbatim: true })))(hostname);
+		addresses = await abortable((options.lookup ?? ((host: string) => dnsLookup(host, { all: true, verbatim: true })))(hostname), signal);
+		checkCancelled(signal);
 	} catch (err) {
+		checkCancelled(options.signal);
+		if (deadline.aborted) throw new Error("DNS resolution timed out");
 		const message = err instanceof Error ? err.message : String(err);
 		throw new Error(`Failed to resolve ${hostname}: ${message}`);
 	}

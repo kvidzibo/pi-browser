@@ -31,6 +31,16 @@ test("tabs requires tabAction", () => {
 	assert.throws(() => validateAction({ action: "tabs", tabAction: "switch" }), /tabId is required/);
 });
 
+test("snapshot continuation and screenshot attachment parameters are bounded", () => {
+	assert.throws(() => validateAction({ action: "snapshot", offset: 2 }), /snapshotId/);
+	for (const limit of [0, 1001, 1.5]) assert.throws(() => validateAction({ action: "snapshot", limit }), /limit/);
+	assert.throws(() => validateAction({ action: "snapshot", snapshotId: 1, depth: 3 }), /fresh snapshot/);
+	assert.throws(() => validateAction({ action: "snapshot", depth: 31 }), /depth/);
+	assert.deepEqual(validateAction({ action: "snapshot", snapshotId: 2, offset: 201, limit: 100 }),
+		{ action: "snapshot", snapshotId: 2, offset: 201, limit: 100, depth: undefined });
+	assert.deepEqual(validateAction({ action: "screenshot", image: true }), { action: "screenshot", image: true });
+});
+
 test("wait bounds", () => {
 	assert.throws(() => validateAction({ action: "wait", timeoutMs: 99_999 }), /timeoutMs/);
 	assert.deepEqual(validateAction({ action: "wait" }), { action: "wait", timeoutMs: 1000 });

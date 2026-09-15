@@ -1,3 +1,4 @@
+import { DEFAULT_SNAPSHOT_LINES, MAX_SNAPSHOT_LINES } from "./snapshot.ts";
 import { ACTION_SET, MAX_TEXT_CHARS, MAX_URL_CHARS, MAX_WAIT_MS, TAB_ACTION_SET, type BrowserAction, type TabAction } from "./constants.ts";
 
 export type BrowserParams = {
@@ -12,12 +13,17 @@ export type BrowserParams = {
 	tabAction?: string;
 	tabId?: string;
 	timeoutMs?: number;
+	snapshotId?: number;
+	offset?: number;
+	limit?: number;
+	depth?: number;
+	image?: boolean;
 };
 
 export type ValidatedAction =
 	| { action: "navigate"; url: string }
-	| { action: "snapshot" }
-	| { action: "screenshot" }
+	| { action: "snapshot"; snapshotId?: number; offset: number; limit: number; depth?: number }
+	| { action: "screenshot"; image: boolean }
 	| { action: "click"; ref: string }
 	| { action: "type"; ref: string; text: string }
 	| { action: "press"; key: string; ref?: string }
@@ -51,8 +57,19 @@ export function validateAction(params: BrowserParams): ValidatedAction {
 	switch (act) {
 		case "navigate":
 			return { action: "navigate", url: req(params.url, "url") };
-		case "snapshot":
+		case "snapshot": {
+			const offset = params.offset ?? 1, limit = params.limit ?? DEFAULT_SNAPSHOT_LINES;
+			if (!Number.isSafeInteger(offset) || offset < 1) throw new Error("offset must be a positive integer");
+			if (!Number.isInteger(limit) || limit < 1 || limit > MAX_SNAPSHOT_LINES) throw new Error(`limit must be 1..${MAX_SNAPSHOT_LINES}`);
+			if (params.snapshotId !== undefined && (!Number.isSafeInteger(params.snapshotId) || params.snapshotId < 1)) throw new Error("snapshotId must be a positive integer");
+			if (offset !== 1 && params.snapshotId === undefined) throw new Error("Pagination requires snapshotId from the previous result");
+			if (params.depth !== undefined && (!Number.isInteger(params.depth) || params.depth < 1 || params.depth > 30)) throw new Error("depth must be 1..30");
+			if (params.snapshotId !== undefined && params.depth !== undefined) throw new Error("depth only applies to a fresh snapshot");
+			return { action: "snapshot", snapshotId: params.snapshotId, offset, limit, depth: params.depth };
+		}
 		case "screenshot":
+			if (params.image !== undefined && typeof params.image !== "boolean") throw new Error("image must be a boolean");
+			return { action: "screenshot", image: params.image ?? false };
 		case "back":
 		case "close":
 			return { action: act };

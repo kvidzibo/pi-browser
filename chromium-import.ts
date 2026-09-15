@@ -118,7 +118,7 @@ export async function listChromiumCookieSites(options: { sourceRoot?: string; pl
 		}
 		return [...sites.values()].sort((a, b) => a.origin.localeCompare(b.origin));
 	} catch {
-		throw new Error("Could not list Chromium cookie sites. Check Node 22.16+ and the readable Default profile, or enter origins manually.");
+		throw new Error("Could not list Chromium cookie sites. Check Node >=22.19.0 and the readable Default profile, or enter origins manually.");
 	}
 }
 
@@ -195,6 +195,6 @@ export async function createChromiumCookieImport(
 		try { await cleanup(); }
 		catch { throw new Error(`Temporary Chromium cookie cleanup failed: ${dir}. Retry /browser logout.`); }
 		// Do not relay SQLite, keyring or profile-parser errors containing source data.
-		throw new Error("Could not import matching Chromium cookies. Requires Node 22.16+ and a readable Default profile with unexpired cookies for the approved sites. If Chromium is busy, close it and retry.");
+		throw new Error("Could not import matching Chromium cookies. Requires Node >=22.19.0 and a readable Default profile with unexpired cookies for the approved sites. If Chromium is busy, close it and retry.");
 	}
 }

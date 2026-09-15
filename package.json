@@ -8,6 +8,9 @@
   ],
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kvidzibo/pi-browser.git"
@@ -24,7 +27,9 @@
   "scripts": {
     "test": "npm run test:unit && npm run test:load",
     "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
-    "test:load": "node --test --experimental-strip-types load.test.ts"
+    "test:load": "node --test --experimental-strip-types load.test.ts",
+    "test:integration": "BROWSER_LOCAL_INTEGRATION=1 node --test --experimental-strip-types tests/cookieless.test.ts tests/chromium-import-live.test.ts tests/browser-lifecycle-live.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "patchright-core": "^1.62.1"
@@ -32,6 +37,12 @@
   "files": [
     "actions.ts",
     "browser-bin.ts",
+    "cancellation.ts",
+    "diagnostics.ts",
+    "doctor.ts",
+    "network-policy.ts",
+    "runtime.ts",
+    "tabs.ts",
     "chromium-import.ts",
     "constants.ts",
     "cookie-access.ts",
@@ -55,5 +66,13 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "22.20.2",
+    "typebox": "1.3.20",
+    "typescript": "5.9.3"
   }
 }

@@ -3,6 +3,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { resolvePinnedTarget, type Lookup } from "./gate.ts";
+import { NetworkPolicyError, networkCode, type NetworkCode } from "./diagnostics.ts";
 
 export type PinProxy = {
 	port: number;
@@ -19,6 +20,7 @@ export type PinProxyOptions = {
 	lookup?: Lookup;
 	allowTarget?: (url: URL) => boolean;
 	connect?: (options: { host: string; port: number; family: number }) => net.Socket;
+	onFailure?: (code: NetworkCode) => void;
 };
 
 export async function startPinProxy(options: PinProxyOptions = {}): Promise<PinProxy> {
@@ -27,7 +29,8 @@ export async function startPinProxy(options: PinProxyOptions = {}): Promise<PinP
 	const track = (socket: Duplex) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); return socket; };
 	const authenticated = (req: IncomingMessage) => proxyAuthOk(req.headers["proxy-authorization"], username, password);
 	const checkTarget = (url: URL, client: Duplex) => {
-		if (client.destroyed || options.allowTarget?.(url) === false) throw new Error("Connection cancelled");
+		if (client.destroyed) throw new NetworkPolicyError("cancelled", "Connection cancelled");
+		if (options.allowTarget?.(url) === false) throw new NetworkPolicyError("origin_not_granted", "Connection cancelled");
 	};
 	const pin = async (url: URL, client: Duplex) => {
 		checkTarget(url, client);
@@ -68,26 +71,29 @@ export async function startPinProxy(options: PinProxyOptions = {}): Promise<PinP
 			const pinned = await pin(url, req.socket);
 			// Check in this continuation: returning from an async pin helper also yields.
 			checkTarget(url, req.socket);
-			const headers = { ...req.headers, host: url.host };
+			const headers: http.OutgoingHttpHeaders = { ...req.headers, host: url.host };
 			delete headers["proxy-authorization"]; delete headers["proxy-connection"];
 			const upstream = http.request(url, {
 				method: req.method, headers, maxHeaderSize: 64_000,
 				createConnection: (_opts, done) => {
 					void connect(pinned.address.address, Number(url.port || 80), pinned.address.family).then((socket) => {
 						try { checkTarget(url, req.socket); done(null, socket); }
-						catch (error) { socket.destroy(); done(error as Error); }
-					}, done);
+						catch (error) { socket.destroy(); done(error as Error, socket); }
+					}).catch((error: Error) => {
+						// Node's oncreate returns on error without reading the stream. Its type still requires that unused argument.
+						done(error, undefined!);
+					});
 					return undefined;
 				},
 			}, (response) => {
 				res.writeHead(response.statusCode ?? 502, response.headers);
 				response.on("error", () => res.destroy()); response.pipe(res);
 			});
-			upstream.on("error", fail);
+			upstream.on("error", (error) => { options.onFailure?.(networkCode(error)); fail(); });
 			req.on("error", () => upstream.destroy());
 			res.on("close", () => upstream.destroy());
 			req.pipe(upstream);
-		} catch { fail(); }
+		} catch (error) { options.onFailure?.(networkCode(error)); fail(); }
 	}
 
 	async function tunnel(req: IncomingMessage, client: Duplex, head: Buffer, isConnect: boolean): Promise<void> {
@@ -108,7 +114,7 @@ export async function startPinProxy(options: PinProxyOptions = {}): Promise<PinP
 			}
 			if (head.length) upstream.write(head);
 			client.resume();
-		} catch { if (!client.destroyed) client.end(FORBIDDEN); }
+		} catch (error) { options.onFailure?.(networkCode(error)); if (!client.destroyed) client.end(FORBIDDEN); }
 	}
 
 	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
