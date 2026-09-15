@@ -3,7 +3,7 @@ import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "patchright-core";
 import { validateAction, type BrowserParams } from "./actions.ts";
-import { createChromiumCookieImport, type ChromiumCookieImport } from "./chromium-import.ts";
+import { CookieImportError, createChromiumCookieImport, type ChromiumCookieImport } from "./chromium-import.ts";
 import {
 	DEFAULT_TIMEOUT_MS,
 	PROFILE_DIR_NAME,
@@ -121,13 +121,14 @@ export class BrowserSession {
 			await this.ensureLaunched(options.signal);
 			checkCancelled();
 			const count = (await this.context!.cookies()).length;
-			if (!count) throw new Error("No imported cookies loaded");
+			if (!count) throw new CookieImportError("cookies_not_loaded");
 			await this.secretValues();
 			checkCancelled();
 			this.cookieApproval = { origins: new Set(origins), names: cookieNames ? new Set(cookieNames) : undefined };
 			return count;
-		} catch {
+		} catch (error) {
 			try { await this.closeBrowser(); } finally { await this.clearGrants(); }
+			if (error instanceof CookieImportError) throw new CookieImportError(error.code);
 			throw new Error("Chromium cookie import failed. Check the Default profile, Node >=22.19.0, and your unlocked desktop keyring. You can also use /browser login.");
 		}
 	}
