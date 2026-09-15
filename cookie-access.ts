@@ -6,7 +6,7 @@ import { confirmCookieAccessWithUI } from "./cookie-consent.ts";
 import { normalizeHostname, validateBrowserUrl } from "./gate.ts";
 import type { BrowserSession, SessionResult } from "./session.ts";
 
-type CookieAccessSession = Pick<BrowserSession, "closeBrowser" | "clearGrants" | "importChromiumCookies">;
+type CookieAccessSession = Pick<BrowserSession, "closeBrowser" | "clearGrants" | "importChromiumCookies" | "hasCookieAccess">;
 export type CookieAccessParams = { origins?: string[]; cookieNames?: string[] };
 
 function exactOrigins(input: unknown): string[] {
@@ -48,13 +48,20 @@ export async function requestCookieAccessWithUI(
 	// Copy and validate inputs before awaiting the dialog; later argument mutations cannot widen approval.
 	const requestedOrigins = exactOrigins(params.origins);
 	const cookieNames = parseCookieNames(params.cookieNames);
-	const approved = await (options.confirm ?? confirmCookieAccessWithUI)(ctx, "Allow browser cookie access?",
+	if (session.hasCookieAccess(requestedOrigins, cookieNames)) {
+		return {
+			content: `Cookie access already approved for ${requestedOrigins.join(", ")} this session. Reusing the existing isolated profile; no cookies re-imported. Tabs and current grants unchanged. Ready for browser navigation.`,
+			details: { status: "granted", origins: requestedOrigins, cookieNames, reused: true },
+		};
+	}
+	const approved = await (options.confirm ?? confirmCookieAccessWithUI)(ctx, "Allow browser cookie access for this session?",
 		`Source: Chromium's Linux Default profile (read-only snapshot).\n` +
 		`Destinations (exact origins):\n${requestedOrigins.map((origin) => `  ${origin}`).join("\n")}\n` +
 		`Cookie names: ${cookieNames ? cookieNames.join(", ") : "ALL cookies matching these destinations"}.\n\n` +
 		"Only cookies whose own domain matches a destination are imported; cookies are never reassigned to another domain. " +
 		"Name filters limit the imported snapshot, not cookies the site creates later.\n\n" +
-		"The agent can act as you on these origins for this session. This replaces the current browser profile/grants and closes its tabs. " +
+		"The agent can act as you on these origins for this session. Requests within this scope reuse approval without another prompt or import. " +
+		"New origins or broader cookie-name access need approval. This replaces the current browser profile/grants and closes its tabs. " +
 		"Cookie values are not shown to the model. The temporary copy is deleted on /browser logout, /reload or shutdown.",
 		signal);
 	if (signal?.aborted) return notGranted("cancelled");
