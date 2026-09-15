@@ -3,15 +3,37 @@ name: test
 on:
   push:
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
-  unit:
+  validate:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-      - run: npm ci --omit=peer
-      # Factory load (npm run test:load) needs `pi` on PATH; not available here.
-      - run: npm run test:unit
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --include=dev --ignore-scripts
+      - name: Install isolated browser test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb gnome-keyring dbus-x11 libsecret-tools openssl
+          node node_modules/patchright-core/cli.js install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/browser-bin"
+          CHROMIUM=$(node --input-type=module -e 'import { chromium } from "patchright-core"; console.log(chromium.executablePath())')
+          ln -s "$CHROMIUM" "$RUNNER_TEMP/browser-bin/chromium"
+          echo "$RUNNER_TEMP/browser-bin" >> "$GITHUB_PATH"
+          echo "PI_BROWSER_EXECUTABLE=$CHROMIUM" >> "$GITHUB_ENV"
+      - run: npm run typecheck
+      - run: xvfb-run -a npm test
+      - run: xvfb-run -a npm run test:integration
+        env:
+          BROWSER_REQUIRE_KEYRING: "1"

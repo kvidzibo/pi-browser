@@ -94,7 +94,8 @@ export async function fetchCookieless(rawUrl: string, input: ResourceRequest, op
 	const request = options.request ?? (url.protocol === "https:" ? https.request : http.request);
 	const hostname = normalizeHostname(url.hostname);
 	const response = await new Promise<ResourceResponse>((resolve, reject) => {
-		const requestOptions: RequestOptions = {
+		// Node forwards this net.connect option; @types/node's HTTP options omit it.
+		const requestOptions: RequestOptions & { autoSelectFamily: false } = {
 			method, headers: { ...headers, host: url.host, "accept-encoding": "identity" }, agent: false, signal,
 			lookup: (_host, _opts, callback) => callback(null, pinned.address.address, pinned.address.family),
 			family: pinned.address.family, autoSelectFamily: false,

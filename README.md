@@ -11,13 +11,14 @@ This is anti-automation hardening, not a captcha solver and not a residential-IP
 | `browser` | navigate, a11y snapshot, click/type/select, tabs, screenshot, close |
 | `browser` action `request_cookies` | ask you to approve cookie access for exact origins, optionally limited to named cookies |
 | `/browser status` | mode, url, origin grants |
+| `/browser doctor` | local Node/browser/Xvfb checks and bounded network failure categories |
 | `/browser mode xvfb\|headless\|host` | display mode (host = your `$DISPLAY`) |
 | `/browser login` | isolated profile on your screen; you log in; then grant origins |
 | `/browser login --from-chromium` | multi-select cookie sites from Linux Chromium's Default profile, then approve import |
 | `/browser logout` | drop grants; next launch is ephemeral |
 | `/browser close` | kill Chromium + Xvfb |
 
-> **Security:** Pi packages run with your full system permissions. After `/browser login` or an approved cookie request, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs and `file:` are blocked. Your real Chrome/Chromium profile is never driven; the optional human-confirmed Chromium import uses a separate cookie snapshot. Tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
+> **Security:** Pi packages run with your full system permissions. After `/browser login` or an approved cookie request, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs and `file:` are blocked. Your real Chrome/Chromium profile is never driven; the optional human-confirmed Chromium import uses a separate cookie snapshot. Text tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
 
 ## Quick example
 
@@ -49,11 +50,40 @@ This is a usage example, not a recorded browser session. It needs a browser exec
 
 **Design trade-off:** ephemeral anonymous profiles and per-session login grants keep agent browsing separate from your everyday profile. Signed-in tasks need your explicit approval, and ungranted document destinations are blocked rather than silently inheriting access. These controls are not a complete sandbox. See [grant handling](grants.ts), [grant tests](tests/grants.test.ts) and the [network limitations](#network-gate).
 
+## Snapshots and screenshots
+
+Snapshots default to **200 lines**, with a byte limit. Use the `snapshotId` and
+next `offset` printed in a result to read more of that **same cached snapshot**:
+
+```json
+{ "action": "snapshot", "snapshotId": 7, "offset": 201, "limit": 200 }
+```
+
+Use the actual numbers returned by your session. `limit` accepts 1–1000 lines;
+byte limits may return fewer. Exceptionally long lines are wrapped, not discarded.
+Omit `snapshotId` to capture a new snapshot. A fresh snapshot can use `depth`
+(1–30) to limit tree depth. The cache holds one snapshot, up to 4 MiB.
+Tab switches, closure and main-frame navigation invalidate references and cached
+continuations. Taking another snapshot also invalidates older references.
+
+Screenshots save a private PNG and return its path. To attach the image directly:
+
+```json
+{ "action": "screenshot", "image": true }
+```
+
+Attachments are limited to 8 MiB; larger images remain available at the saved path.
+Screenshots contain **unredacted, untrusted visible page data**. Screenshot files
+are retained after close/logout; delete them yourself when no longer needed.
+Cancelled actions reject before further input is dispatched; already-dispatched
+site actions cannot be undone. Queued cancellations do not start browser work.
+
 ## Install
 
 This README tracks repository source. npm packages and Git tags may be behind it; check the version you install before relying on newer features.
 
-Need Google Chrome or Chromium. Optional on Linux: `xvfb` (headed virtual display — default when present).
+Requires **Node >=22.19.0** and Google Chrome or Chromium. Development and CI test
+against Pi **0.85.1**. Optional on Linux: `xvfb` (headed virtual display — default when present).
 
 ```bash
 pi install npm:@kvidzibo/pi-browser
@@ -69,7 +99,7 @@ Local checkout — Pi adds the path only; it does **not** run `npm install` for 
 
 ```bash
 cd /absolute/path/to/pi-browser
-npm install --omit=peer
+npm install --omit=dev --omit=peer
 pi install /absolute/path/to/pi-browser
 ```
 
@@ -85,6 +115,21 @@ Browser discovery, in order:
 4. Patchright-cached Chromium (`npx patchright install chromium`)
 
 Default mode: **xvfb** on Linux if `Xvfb` exists, else **headless**. `host` is slash-command only. The model cannot switch to host or open manual login; it can request cookie access through a user approval dialog.
+
+### Storage and troubleshooting
+
+`PI_CODING_AGENT_DIR` overrides the default `~/.pi/agent` directory for the isolated
+login profile, screenshots and run-state files. Chromium import source paths remain
+controlled by Chromium's own configuration variables; this override does not change
+the source browser profile.
+
+Run `/browser doctor` to check Node compatibility, executable availability, Xvfb,
+mode and the selected agent directory. It does not launch a browser, contact sites,
+read cookie inventory or access the keyring. Network failures expose only fixed
+categories and bounded counts (such as `dns`, `tls`, `origin_not_granted`,
+`private_address`, `redirect`, `resource_limit` and `timeout`), not URLs, headers,
+bodies or raw transport errors. Results and doctor show the current/last action's
+categories; there is no persistent diagnostic log.
 
 ## Cookies / login
 
@@ -166,7 +211,7 @@ Only checked origins are DNS-validated and offered for import approval. Nothing 
 all Google sites automatically. RPC clients, or a failed site inventory, retain the
 manual comma-separated origin prompt.
 
-- Requires **Node 22.16+** and `chromium` or `chromium-browser` on PATH. Uses Chromium,
+- Requires **Node >=22.19.0** and `chromium` or `chromium-browser` on PATH. Uses Chromium,
   not the ordinary Chrome/Edge auto-selection or `PI_BROWSER_EXECUTABLE` override.
 - Reads the standard Linux **Default** profile at `~/.config/chromium/Default`
   (`CHROME_CONFIG_HOME` / `XDG_CONFIG_HOME` respected). Supports both `Cookies` and
@@ -212,12 +257,20 @@ With profile grants active, the proxy itself restricts every HTTP request and CO
 
 This is not a full intercepting proxy. WebRTC is disabled; residual DNS-rebinding / WebSocket risk remains.
 
-## Tests
+## Development and tests
 
 ```bash
-xvfb-run -a npm test # unit + native TUI/factory load (needs `pi` and Xvfb on PATH)
-npm run test:unit    # no Pi required; this is what CI runs
+npm ci --include=dev --ignore-scripts
+npm run typecheck
+xvfb-run -a npm test # unit, package contents, native TUI/factory load
+xvfb-run -a npm run test:integration
 ```
+
+The factory suite uses the pinned development Pi (a global `pi` is only a fallback).
+`npm run test:unit` runs without launching Chromium. CI runs typechecking, the full
+factory/TUI suite, packaging checks and local Chromium integration on **Node 22 and
+24**. Publishing depends on that same validation workflow. The public-network smoke
+remains opt-in; CI uses synthetic cookies, fixtures and a private test keyring.
 
 No live browser in the default suite. Cookie-site and name-filter tests use synthetic SQLite/WAL files;
 permission tests cover approval, denial, cancellation, exact origins, non-interactive
@@ -229,7 +282,7 @@ It also exercises cookie-site multi-selection, search, keyboard/mouse input and 
 Run the isolated local Chromium cookie/decoding/TLS/proxy contract tests (synthetic cookies, temporary OpenSSL test certificate, loopback fixtures, no public requests):
 
 ```bash
-BROWSER_LOCAL_INTEGRATION=1 xvfb-run -a node --test --experimental-strip-types tests/cookieless.test.ts tests/chromium-import-live.test.ts
+xvfb-run -a npm run test:integration
 ```
 
 The cookie-import fixture creates a synthetic encrypted Chromium profile and checks
@@ -237,16 +290,24 @@ persistent/session cookies, source integrity, origin/name filtering, approved re
 replacement, denial preserving the active session, output redaction and logout cleanup. When `gnome-keyring-daemon`, `dbus-daemon` and `gdbus` are installed,
 this also creates a private test D-Bus/keyring and verifies libsecret-encrypted `v11`
 cookies, not just basic-storage `v10` cookies. It does not read your real browser
-cookies or desktop keyring.
+cookies or desktop keyring. CI sets `BROWSER_REQUIRE_KEYRING=1` so missing keyring
+fixture dependencies fail rather than silently skip. The lifecycle suite also checks
+cancelled input, cross-tab stale references, navigation invalidation, snapshot
+pagination, image attachments and the agent-directory override.
+
+### Architecture
+
+- `session.ts`: command/action orchestration and approved cookie-profile transactions.
+- `runtime.ts`: browser launch, partial-launch cleanup and private run-state files.
+- `tabs.ts`: tab/document identity and snapshot-reference lifetime, with typed page fixtures.
+- `network-policy.ts`: routed request policy; `pin-proxy.ts` and `cookieless.ts`: transports.
+- `snapshot.ts`: immutable, bounded snapshot pagination; `diagnostics.ts`: fixed failure categories.
+- `cancellation.ts`: cancellation checks and a queue that retains locks during cleanup.
 
 Optional public-network smoke:
 
 ```bash
-BROWSER_LIVE=1 node --test --experimental-strip-types tests/live.test.ts
-```
-
-On a machine with Xvfb, headed smoke is:
-
-```bash
 BROWSER_LIVE=1 xvfb-run -a node --test --experimental-strip-types tests/live.test.ts
 ```
+
+Run `/reload` in Pi after extension changes to replace the loaded runtime.

@@ -15,7 +15,10 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 	if (keyring) {
 		const { execFileSync } = await import("node:child_process");
 		try { for (const cmd of ["gnome-keyring-daemon", "dbus-daemon", "gdbus"]) execFileSync("which", [cmd], { stdio: "ignore" }); }
-		catch { t.skip("private desktop-keyring fixture tools unavailable"); return; }
+		catch {
+			if (process.env.BROWSER_REQUIRE_KEYRING === "1") throw new Error("Required private keyring fixture tools unavailable");
+			t.skip("private desktop-keyring fixture tools unavailable"); return;
+		}
 	}
 	const { chromium } = await import("patchright-core");
 	const executablePath = (await findChromium()).executablePath;
@@ -23,7 +26,7 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 	const root = join(dir, "chromium");
 	const beforeEnv = { ...process.env };
 	// Synthetic profiles only. Do not use the tester's real HOME or desktop keyring.
-	Object.assign(process.env, { HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "config"),
+	Object.assign(process.env, { HOME: join(dir, "home"), PI_CODING_AGENT_DIR: join(dir, "agent"), XDG_CONFIG_HOME: join(dir, "config"),
 		XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_RUNTIME_DIR: join(dir, "run"),
 		XDG_CURRENT_DESKTOP: keyring ? "GNOME" : "", GNOME_KEYRING_CONTROL: join(dir, "keyring-control"),
 		DBUS_SESSION_BUS_ADDRESS: `unix:path=${dir}/no-session-bus`, DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${dir}/no-system-bus` });
@@ -86,6 +89,9 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 			{ hasUI: true, mode: "rpc", ui: { confirm: async () => false } } as any, params));
 		assert.equal(denied.details?.status, "denied");
 		assert.equal((session as any).context, context, "denial must not close or replace the active browser");
+		const previousSnapshot = await session.execute({ action: "snapshot" });
+		const previousSnapshotId = Number(previousSnapshot.details?.snapshot);
+		await session.execute({ action: "snapshot", snapshotId: previousSnapshotId, offset: 1 });
 		const previousCopy = importedDir;
 		const approved = await session.withLock(() => requestCookieAccessWithUI(session,
 			{ hasUI: true, mode: "rpc", ui: { confirm: async () => true } } as any, params));
@@ -93,6 +99,7 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 		assert.equal(approved.details?.cookieCount, 1);
 		assert.ok(!JSON.stringify(approved).includes("fixture-secret"));
 		assert.deepEqual(session.grantList(), params.origins);
+		await assert.rejects(session.execute({ action: "snapshot", snapshotId: previousSnapshotId, offset: 1 }), /Stale/);
 		context = (session as any).context;
 		assert.deepEqual((await context.cookies()).map((cookie: any) => cookie.name), ["session"]);
 		assert.notEqual(importedDir, previousCopy);

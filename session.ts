@@ -1,70 +1,31 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "patchright-core";
 import { validateAction, type BrowserParams } from "./actions.ts";
-import { findBrowser } from "./browser-bin.ts";
-import { createChromiumCookieImport, IMPORT_BROWSER_ARGS, IMPORT_IGNORE_ARGS, type ChromiumCookieImport } from "./chromium-import.ts";
+import { createChromiumCookieImport, type ChromiumCookieImport } from "./chromium-import.ts";
 import {
 	DEFAULT_TIMEOUT_MS,
-	DEFAULT_VIEWPORT,
 	PROFILE_DIR_NAME,
-	RUN_DIR_NAME,
 	SHOTS_DIR_NAME,
-	SHUTDOWN_GRACE_MS,
 	type DisplayMode,
 } from "./constants.ts";
-import { cmdlineOf, killPid, resolveMode, startXvfb, stopXvfb, type XvfbHandle } from "./display.ts";
-import { isAboutBlank, isPassthroughRequestUrl, validateBrowserUrl } from "./gate.ts";
-import { classifyGrantedRequest, originAllowed, originOf } from "./grants.ts";
-import { startPinProxy, type PinProxy } from "./pin-proxy.ts";
+import { resolveMode, type XvfbHandle } from "./display.ts";
+import { isAboutBlank, validateBrowserUrl } from "./gate.ts";
+import { originAllowed, originOf } from "./grants.ts";
+import type { PinProxy } from "./pin-proxy.ts";
 import { fetchCookieless } from "./cookieless.ts";
-import { browserNetworkArgs } from "./constants.ts";
 import { redactUrl, sanitizeWithSecrets } from "./redact.ts";
-import { formatUntrustedSnapshot, parseAgentRef } from "./snapshot.ts";
-
-const MARKER = "pi-browser";
-
-type RunState = {
-	marker: string;
-	ownerPid: number;
-	xvfbPid?: number;
-	browserPid?: number;
-	display?: string;
-	userDataDir?: string;
-};
-
-class Mutex {
-	private chain: Promise<void> = Promise.resolve();
-
-	run<T>(fn: () => Promise<T>): Promise<T> {
-		let release!: () => void;
-		const next = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const wait = this.chain;
-		this.chain = wait.then(
-			() => next,
-			() => next,
-		);
-		return wait.then(fn, fn).finally(() => release());
-	}
-}
-
-function piAgentDir(): string {
-	return join(homedir(), ".pi", "agent");
-}
-
-function ensurePrivateDir(path: string): string {
-	mkdirSync(path, { recursive: true, mode: 0o700 });
-	chmodSync(path, 0o700);
-	return path;
-}
+import { formatUntrustedSnapshot, SnapshotCache, DEFAULT_SNAPSHOT_LINES } from "./snapshot.ts";
+import { abortable, checkCancelled, Mutex } from "./cancellation.ts";
+import { TabRegistry } from "./tabs.ts";
+import { NetworkPolicy } from "./network-policy.ts";
+import { closeRuntime, ensurePrivateDir, launchRuntime, RuntimeState } from "./runtime.ts";
 
 export type SessionResult = {
 	content: string;
 	details?: Record<string, unknown>;
+	image?: { data: string; mimeType: "image/png" };
 };
 
 export class BrowserSession {
@@ -76,11 +37,12 @@ export class BrowserSession {
 	private browser: Browser | undefined;
 	private context: BrowserContext | undefined;
 	private persistent = false;
-	private pages = new Map<string, Page>();
-	private activeTab = "";
-	private tabSeq = 0;
-	private snapshotRev = 0;
-	private networkAbort = new AbortController();
+	private readonly tabs = new TabRegistry<Page>();
+	private readonly snapshots = new SnapshotCache();
+	private readonly network = new NetworkPolicy();
+	private readonly runtime = new RuntimeState();
+	private get pages() { return this.tabs.pages; }
+	private get activeTab() { return this.tabs.active; }
 	private forcePersistent = false;
 	private proxy: PinProxy | undefined;
 	private cookieSecrets = new Set<string>();
@@ -94,9 +56,12 @@ export class BrowserSession {
 		this.cookieImporter = cookieImporter;
 	}
 
-	withLock<T>(fn: () => Promise<T>): Promise<T> {
-		return this.lock.run(fn);
+	withLock<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this.lock.run(fn, signal);
 	}
+
+	networkSummary(): string { return this.network.diagnostics.summary() || "none recorded"; }
+	displayMode(): DisplayMode { return resolveMode(this.mode); }
 
 	setMode(mode: DisplayMode): void {
 		this.mode = mode;
@@ -150,7 +115,7 @@ export class BrowserSession {
 			return count;
 		} catch {
 			try { await this.closeBrowser(); } finally { await this.clearGrants(); }
-			throw new Error("Chromium cookie import failed. Check the Default profile, Node 22.16+, and your unlocked desktop keyring. You can also use /browser login.");
+			throw new Error("Chromium cookie import failed. Check the Default profile, Node >=22.19.0, and your unlocked desktop keyring. You can also use /browser login.");
 		}
 	}
 
@@ -170,7 +135,7 @@ export class BrowserSession {
 		this.adoptPage(keeper, true);
 		for (const [id, page] of previous) {
 			try { await page.close(); } catch { /* already closed */ }
-			this.pages.delete(id);
+			this.tabs.remove(id);
 		}
 		this.invalidateSnapshot();
 	}
@@ -184,34 +149,7 @@ export class BrowserSession {
 		return `browser ${running} mode=${mode} persistent=${this.persistent} source=${this.importedProfile ? "chromium-copy" : "isolated"} url=${urlText} grants=${grants}`;
 	}
 
-	async reapStale(): Promise<void> {
-		const dir = join(piAgentDir(), RUN_DIR_NAME);
-		let names: string[] = [];
-		try {
-			names = readdirSync(dir);
-		} catch {
-			return;
-		}
-		for (const name of names) {
-			if (!name.startsWith("state-") || !name.endsWith(".json")) continue;
-			const path = join(dir, name);
-			let state: RunState;
-			try {
-				state = JSON.parse(readFileSync(path, "utf8")) as RunState;
-			} catch {
-				continue;
-			}
-			if (state.marker !== MARKER) continue;
-			if (state.ownerPid === process.pid && this.context) continue;
-			if (state.ownerPid !== process.pid && pidAlive(state.ownerPid)) continue;
-			await reapState(state);
-			try {
-				unlinkSync(path);
-			} catch {
-				// ignore
-			}
-		}
-	}
+	async reapStale(): Promise<void> { await this.runtime.reap(); }
 
 	async shutdown(): Promise<void> {
 		await this.withLock(async () => {
@@ -231,12 +169,19 @@ export class BrowserSession {
 	}
 
 	async execute(params: BrowserParams, signal?: AbortSignal): Promise<SessionResult> {
+		this.network.diagnostics.reset();
 		try {
-			return await this.sanitizeResult(await this.executeInner(params, signal));
+			checkCancelled(signal);
+			const result = await this.executeInner(params, signal);
+			checkCancelled(signal);
+			const safe = await this.sanitizeResult(result, signal);
+			checkCancelled(signal);
+			return safe;
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			const secrets = await this.secretValues();
-			throw new Error(sanitizeWithSecrets(message, secrets));
+			const message = signal?.aborted ? "Browser action cancelled" : err instanceof Error ? err.message : String(err);
+			const secrets = signal?.aborted ? [...this.cookieSecrets] : await this.secretValues();
+			const network = this.network.diagnostics.summary();
+			throw new Error(sanitizeWithSecrets(message, secrets) + (network ? `\nNetwork: ${network}` : ""));
 		}
 	}
 
@@ -247,25 +192,30 @@ export class BrowserSession {
 			return { content: await this.closeBrowser() };
 		}
 		await this.ensureLaunched(signal);
-		await this.secretValues();
+		await this.secretValues(signal);
+		checkCancelled(signal);
 		const page = this.requirePage();
 		const timeout = DEFAULT_TIMEOUT_MS;
 
 		switch (action.action) {
 			case "navigate":
 				await this.goto(page, action.url, signal);
-				return this.snapshotResult(page);
+				return this.snapshotResult(page, undefined, signal);
 			case "snapshot":
 				this.assertPageAllowed(page, "snapshot");
-				return this.snapshotResult(page);
+				if (action.snapshotId !== undefined) {
+					this.tabs.assertSnapshot(page, action.snapshotId);
+					return this.snapshots.read(action.snapshotId, action.offset, action.limit);
+				}
+				return this.snapshotResult(page, undefined, signal, action.limit, action.depth);
 			case "screenshot":
 				this.assertPageAllowed(page, "screenshot");
-				return this.screenshotResult(page);
+				return this.screenshotResult(page, action.image, signal);
 			case "click": {
 				this.assertPageAllowed(page, "click");
 				await this.locator(page, action.ref).click({ timeout, signal, steps: 8, delay: 25 });
 				await this.enforceAfterNavigation(this.requirePage());
-				return this.snapshotResult(this.requirePage());
+				return this.snapshotResult(this.requirePage(), undefined, signal);
 			}
 			case "type":
 				this.assertPageAllowed(page, "type");
@@ -280,14 +230,15 @@ export class BrowserSession {
 			case "press": {
 				this.assertPageAllowed(page, "press");
 				if (action.ref) await this.locator(page, action.ref).press(action.key, { timeout, signal });
-				else await page.keyboard.press(action.key);
+				else { checkCancelled(signal); await page.keyboard.press(action.key); }
 				await this.enforceAfterNavigation(this.requirePage());
-				return this.snapshotResult(this.requirePage());
+				return this.snapshotResult(this.requirePage(), undefined, signal);
 			}
 			case "scroll": {
 				this.assertPageAllowed(page, "scroll");
 				const delta = action.direction === "up" ? -800 : 800;
 				if (action.ref) await this.locator(page, action.ref).hover({ timeout, signal });
+				checkCancelled(signal);
 				await page.mouse.wheel(0, delta);
 				return { content: `Scrolled ${action.direction}.` };
 			}
@@ -296,20 +247,20 @@ export class BrowserSession {
 				return { content: `Waited ${action.timeoutMs}ms.` };
 			case "back":
 				this.assertPageAllowed(page, "back");
-				await page.goBack({ timeout, waitUntil: "domcontentloaded" });
+				await page.goBack({ timeout, waitUntil: "domcontentloaded", signal });
 				await this.enforceAfterNavigation(this.requirePage());
-				return this.snapshotResult(this.requirePage());
+				return this.snapshotResult(this.requirePage(), undefined, signal);
 			case "select":
 				this.assertPageAllowed(page, "select");
 				await this.locator(page, action.ref).selectOption(action.value, { timeout, signal });
 				await this.enforceAfterNavigation(this.requirePage());
-				return this.snapshotResult(this.requirePage());
+				return this.snapshotResult(this.requirePage(), undefined, signal);
 			case "check":
 				this.assertPageAllowed(page, "check");
 				if (action.checked) await this.locator(page, action.ref).check({ timeout, signal });
 				else await this.locator(page, action.ref).uncheck({ timeout, signal });
 				await this.enforceAfterNavigation(this.requirePage());
-				return this.snapshotResult(this.requirePage());
+				return this.snapshotResult(this.requirePage(), undefined, signal);
 			case "hover":
 				this.assertPageAllowed(page, "hover");
 				await this.locator(page, action.ref).hover({ timeout, signal });
@@ -320,8 +271,7 @@ export class BrowserSession {
 	}
 
 	private locator(page: Page, ref: string) {
-		const { playwrightRef } = parseAgentRef(ref, this.snapshotRev);
-		return page.locator(`aria-ref=${playwrightRef}`);
+		return page.locator(`aria-ref=${this.tabs.ref(page, ref)}`);
 	}
 
 	private async tabsAction(
@@ -329,34 +279,34 @@ export class BrowserSession {
 		signal?: AbortSignal,
 	): Promise<SessionResult> {
 		await this.dropUngrantedTabs();
+		checkCancelled(signal);
 		if (action.tabAction === "list") return { content: this.tabSummary() };
 		if (action.tabAction === "new") {
 			const page = await this.context!.newPage();
+			if (signal?.aborted) { await page.close(); checkCancelled(signal); }
 			const id = this.adoptPage(page, true);
 			if (action.url) await this.goto(page, action.url, signal);
-			return this.snapshotResult(page, `Opened ${id}.`);
+			return this.snapshotResult(page, `Opened ${id}.`, signal);
 		}
 		if (action.tabAction === "switch") {
 			const page = this.pages.get(action.tabId);
 			if (!page) throw new Error(`Unknown tab ${action.tabId}`);
 			this.assertPageAllowed(page, "tab switch");
-			this.activeTab = action.tabId;
+			this.tabs.activate(action.tabId);
 			await page.bringToFront();
-			return this.snapshotResult(page);
+			return this.snapshotResult(page, undefined, signal);
 		}
 		const tabId = action.tabId ?? this.activeTab;
 		const page = this.pages.get(tabId);
 		if (!page) throw new Error(`Unknown tab ${tabId}`);
 		if (this.pages.size === 1) throw new Error("Cannot close the last tab. Use action close.");
 		await page.close();
-		this.pages.delete(tabId);
-		if (this.activeTab === tabId) {
-			this.activeTab = this.pages.keys().next().value ?? "";
-			await this.activePage()?.bringToFront();
-		}
+		this.tabs.remove(tabId);
+		checkCancelled(signal);
 		const next = this.requirePage();
 		this.assertPageAllowed(next, "tab close");
-		return this.snapshotResult(next, `Closed ${tabId}.`);
+		await next.bringToFront();
+		return this.snapshotResult(next, `Closed ${tabId}.`, signal);
 	}
 
 	private async dropUngrantedTabs(): Promise<void> {
@@ -368,16 +318,13 @@ export class BrowserSession {
 			} catch {
 				// ignore
 			}
-			this.pages.delete(id);
-			if (this.activeTab === id) this.activeTab = "";
-		}
-		if (!this.activeTab || !this.pages.has(this.activeTab)) {
-			this.activeTab = this.pages.keys().next().value ?? "";
+			this.tabs.remove(id);
 		}
 	}
 
 	private async goto(page: Page, rawUrl: string, signal?: AbortSignal): Promise<void> {
-		const url = await validateBrowserUrl(rawUrl);
+		const url = await validateBrowserUrl(rawUrl, { signal });
+		checkCancelled(signal);
 		if (url.protocol !== "http:" && url.protocol !== "https:" && url.href !== "about:blank") {
 			throw new Error(`Navigate blocked for scheme ${url.protocol.replace(":", "")}`);
 		}
@@ -428,40 +375,44 @@ export class BrowserSession {
 		throw new Error(`Left granted origins (${redactUrl(url)}). Tab reset to about:blank.`);
 	}
 
-	private async snapshotResult(page: Page, prefix?: string): Promise<SessionResult> {
-		this.snapshotRev += 1;
-		const yaml = await page.locator("html").ariaSnapshot({ mode: "ai", timeout: DEFAULT_TIMEOUT_MS });
-		const body = formatUntrustedSnapshot({
-			revision: this.snapshotRev,
-			url: redactUrl(page.url()),
-			title: await page.title(),
-			tabs: this.tabSummary(),
-			yaml,
-		});
-		return {
-			content: prefix ? `${prefix}\n\n${body}` : body,
-			details: { snapshot: this.snapshotRev, url: redactUrl(page.url()), tab: this.activeTab },
-		};
+	private async snapshotResult(page: Page, prefix?: string, signal?: AbortSignal, limit = DEFAULT_SNAPSHOT_LINES, depth?: number): Promise<SessionResult> {
+		checkCancelled(signal);
+		const revision = this.tabs.beginSnapshot(page);
+		const yaml = await page.locator("html").ariaSnapshot({ mode: "ai", timeout: DEFAULT_TIMEOUT_MS, signal, depth });
+		const title = await abortable(page.title(), signal);
+		const secrets = await this.secretValues(signal);
+		checkCancelled(signal);
+		this.tabs.completeSnapshot(page, revision);
+		const body = formatUntrustedSnapshot({ revision, url: redactUrl(page.url()), title, tabs: this.tabSummary(), yaml });
+		this.snapshots.set(revision, body, secrets);
+		const result = this.snapshots.read(revision, 1, limit);
+		return { content: prefix ? `${prefix}\n\n${result.content}` : result.content,
+			details: { ...result.details, url: redactUrl(page.url()), tab: this.activeTab } };
 	}
 
-	private async screenshotResult(page: Page): Promise<SessionResult> {
-		const dir = ensurePrivateDir(join(piAgentDir(), SHOTS_DIR_NAME));
+	private async screenshotResult(page: Page, image = false, signal?: AbortSignal): Promise<SessionResult> {
+		checkCancelled(signal);
+		const dir = ensurePrivateDir(join(this.runtime.directory, SHOTS_DIR_NAME));
 		const name = `${Date.now()}-${randomBytes(4).toString("hex")}.png`;
 		const path = join(dir, name);
-		await page.screenshot({ path, type: "png" });
+		const bytes = await page.screenshot({ path, type: "png", signal, timeout: DEFAULT_TIMEOUT_MS });
+		checkCancelled(signal);
 		try {
 			chmodSync(path, 0o600);
 		} catch {
 			// best-effort
 		}
 		return {
-			content: `Screenshot saved: ${path}`,
+			content: `Screenshot saved: ${path}` + (image ? "\nUNTRUSTED PAGE IMAGE. Visible page data is not secret-redacted." : "") +
+				(image && bytes.length > 8 * 1024 * 1024 ? "\nImage attachment omitted: exceeds 8 MiB. Read the saved file if needed." : ""),
 			details: { path, url: redactUrl(page.url()) },
+			image: image && bytes.length <= 8 * 1024 * 1024 ? { data: bytes.toString("base64"), mimeType: "image/png" } : undefined,
 		};
 	}
 
 	private invalidateSnapshot(): void {
-		this.snapshotRev += 1;
+		this.tabs.invalidate();
+		this.snapshots.clear();
 	}
 
 	private tabSummary(): string {
@@ -486,24 +437,12 @@ export class BrowserSession {
 	private adoptPage(page: Page, active: boolean): string {
 		for (const [id, existing] of this.pages) {
 			if (existing === page) {
-				if (active) this.activeTab = id;
+				if (active) this.tabs.activate(id);
 				return id;
 			}
 		}
 		this.watchPage(page);
-		return this.trackPage(page, active);
-	}
-
-	private trackPage(page: Page, active: boolean): string {
-		this.tabSeq += 1;
-		const id = `t${this.tabSeq}`;
-		this.pages.set(id, page);
-		if (active || !this.activeTab) this.activeTab = id;
-		page.on("close", () => {
-			this.pages.delete(id);
-			if (this.activeTab === id) this.activeTab = this.pages.keys().next().value ?? "";
-		});
-		return id;
+		return this.tabs.add(page, active);
 	}
 
 	private watchPage(page: Page): void {
@@ -535,61 +474,21 @@ export class BrowserSession {
 	}
 
 	async ensureLaunched(signal?: AbortSignal): Promise<void> {
-		if (this.context) return;
+		checkCancelled(signal);
 		if (this.closed) throw new Error("Browser session is shutting down");
-		if (signal?.aborted) throw new Error("aborted");
+		if (this.context) return;
 
 		try {
 			const wantPersistent = this.grants.size > 0 || this.forcePersistent;
-			const mode = resolveMode(this.mode);
-			if (mode === "host" && !process.env.DISPLAY) throw new Error("host mode needs DISPLAY");
-			if (mode === "xvfb") this.xvfb = await startXvfb();
-			// Capture import mode so even a failed teardown cannot turn a cookie-bearing
-			// proxy into an unrestricted anonymous proxy when its grants are revoked.
-			const imported = Boolean(this.importedProfile);
-			this.proxy = await startPinProxy({ allowTarget: (url) => (!imported && this.grants.size === 0) || this.grants.has(url.origin) });
-
-			const binary = this.importedProfile ?? await findBrowser();
-			const { chromium } = await import("patchright-core");
-			const env: Record<string, string> = { ...process.env } as Record<string, string>;
-			if (this.xvfb) env.DISPLAY = this.xvfb.display;
-
-			const proxy = {
-				server: `http://127.0.0.1:${this.proxy.port}`,
-				username: this.proxy.username,
-				password: this.proxy.password,
-			};
-			const launchOptions = {
-				executablePath: binary.executablePath,
-				headless: mode === "headless",
-				args: [...browserNetworkArgs(wantPersistent), ...(this.importedProfile ? IMPORT_BROWSER_ARGS : [])],
-				ignoreDefaultArgs: this.importedProfile ? IMPORT_IGNORE_ARGS : undefined,
-				proxy,
-				env,
-				timeout: DEFAULT_TIMEOUT_MS,
-			};
-
-			const contextOptions = {
-				viewport: DEFAULT_VIEWPORT,
-				acceptDownloads: false,
-				serviceWorkers: "block" as const,
-				ignoreHTTPSErrors: false,
-				proxy,
-			};
-
-			if (wantPersistent) {
-				const userDataDir = this.importedProfile?.userDataDir ?? ensurePrivateDir(join(piAgentDir(), PROFILE_DIR_NAME));
-				this.context = await chromium.launchPersistentContext(userDataDir, {
-					...launchOptions,
-					...contextOptions,
-				});
-				this.persistent = true;
-				this.browser = this.context.browser() ?? undefined;
-			} else {
-				this.browser = await chromium.launch(launchOptions);
-				this.context = await this.browser.newContext(contextOptions);
-				this.persistent = false;
-			}
+			const resources = await launchRuntime({ mode: resolveMode(this.mode), persistent: wantPersistent,
+				importedProfile: this.importedProfile, grants: () => this.grants, agentDirectory: this.runtime.directory,
+				diagnostics: this.network.diagnostics, signal });
+			this.context = resources.context;
+			this.browser = resources.browser;
+			this.proxy = resources.proxy;
+			this.xvfb = resources.xvfb;
+			this.persistent = wantPersistent;
+			checkCancelled(signal);
 
 			this.context.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
 			await this.installNetworkGate(this.context);
@@ -622,7 +521,9 @@ export class BrowserSession {
 				await this.dropUngrantedTabs();
 			}
 
-			this.writeRunState();
+			checkCancelled(signal);
+			this.runtime.write({ context: this.context, browser: this.browser, proxy: this.proxy, xvfb: this.xvfb },
+				this.persistent ? this.importedProfile?.userDataDir ?? join(this.runtime.directory, PROFILE_DIR_NAME) : undefined);
 		} catch (err) {
 			await this.teardown();
 			throw err;
@@ -630,26 +531,7 @@ export class BrowserSession {
 	}
 
 	private async installNetworkGate(context: BrowserContext): Promise<void> {
-		const signal = this.networkAbort.signal;
-		await context.route("**/*", async (route) => {
-			const request = route.request();
-			const url = request.url();
-			try {
-				if (signal.aborted) { await route.abort("blockedbyclient"); return; }
-				if (isPassthroughRequestUrl(url)) { await route.continue(); return; }
-				const decision = classifyGrantedRequest(url, this.grants, request.resourceType());
-				if (decision === "abort") { await route.abort("blockedbyclient"); return; }
-				if (decision === "strip-cookie") {
-					const response = await this.resourceFetch(url, {
-						method: request.method(), headers: await request.allHeaders(), body: request.postDataBuffer(),
-					}, { signal });
-					await route.fulfill(response);
-					return;
-				}
-				await validateBrowserUrl(url, { allowWebSocket: true });
-				await route.continue();
-			} catch { await route.abort("blockedbyclient").catch(() => undefined); }
-		});
+		await this.network.install(context, () => this.grants, this.resourceFetch);
 	}
 
 	private rememberSecrets(values: string[]): void {
@@ -658,10 +540,12 @@ export class BrowserSession {
 		}
 	}
 
-	private async secretValues(): Promise<string[]> {
+	private async secretValues(signal?: AbortSignal): Promise<string[]> {
+		checkCancelled(signal);
 		if (this.context) {
 			try {
-				const cookies = await this.context.cookies();
+				const cookies = await abortable(this.context.cookies(), signal);
+				checkCancelled(signal);
 				const out: string[] = [];
 				for (const cookie of cookies) {
 					if (!cookie.value || cookie.value.length < 6) continue;
@@ -678,13 +562,15 @@ export class BrowserSession {
 				// keep previously seen secrets
 			}
 		}
+		checkCancelled(signal);
 		return [...this.cookieSecrets];
 	}
 
-	private async sanitizeResult(result: SessionResult): Promise<SessionResult> {
-		const secrets = await this.secretValues();
-		const content = sanitizeWithSecrets(result.content, secrets);
-		let details = result.details;
+	private async sanitizeResult(result: SessionResult, signal?: AbortSignal): Promise<SessionResult> {
+		const secrets = await this.secretValues(signal);
+		const network = this.network.diagnostics.summary();
+		const content = sanitizeWithSecrets(result.content, secrets) + (network ? `\nNetwork: ${network}` : "");
+		let details = network ? { ...result.details, network: this.network.diagnostics.snapshot() } : result.details;
 		if (details) {
 			try {
 				details = JSON.parse(sanitizeWithSecrets(JSON.stringify(details), secrets)) as Record<string, unknown>;
@@ -695,21 +581,8 @@ export class BrowserSession {
 		return { ...result, content, details };
 	}
 
-	private writeRunState(): void {
-		const dir = ensurePrivateDir(join(piAgentDir(), RUN_DIR_NAME));
-		const state: RunState = {
-			marker: MARKER,
-			ownerPid: process.pid,
-			xvfbPid: this.xvfb?.pid,
-			display: this.xvfb?.display,
-			userDataDir: this.persistent ? this.importedProfile?.userDataDir ?? join(piAgentDir(), PROFILE_DIR_NAME) : undefined,
-		};
-		writeFileSync(join(dir, `state-${process.pid}.json`), JSON.stringify(state), { mode: 0o600 });
-	}
-
 	private async teardown(): Promise<void> {
-		this.networkAbort.abort();
-		this.networkAbort = new AbortController();
+		this.network.close();
 		const xvfb = this.xvfb;
 		const browser = this.browser;
 		const context = this.context;
@@ -718,35 +591,12 @@ export class BrowserSession {
 		this.browser = undefined;
 		this.context = undefined;
 		this.proxy = undefined;
-		this.pages.clear();
-		this.activeTab = "";
-		this.tabSeq = 0;
+		this.tabs.clear();
+		this.snapshots.clear();
 		this.persistent = false;
 		this.cookieSecrets.clear();
-
-		try {
-			await context?.close();
-		} catch {
-			// ignore
-		}
-		try {
-			await browser?.close();
-		} catch {
-			// ignore
-		}
-
-		try {
-			await proxy?.close();
-		} catch {
-			// ignore
-		}
-		await stopXvfb(xvfb, SHUTDOWN_GRACE_MS);
-
-		try {
-			unlinkSync(join(piAgentDir(), RUN_DIR_NAME, `state-${process.pid}.json`));
-		} catch {
-			// ignore
-		}
+		await closeRuntime({ context, browser, proxy, xvfb });
+		this.runtime.remove();
 	}
 }
 
@@ -756,51 +606,6 @@ function safeOrigin(raw: string): string {
 	} catch {
 		return redactUrl(raw);
 	}
-}
-
-function pidAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-async function reapState(state: RunState): Promise<void> {
-	if (state.xvfbPid) {
-		const cmd = cmdlineOf(state.xvfbPid) ?? "";
-		if (cmd.includes("Xvfb") && (!state.display || cmd.includes(state.display.replace(":", "")) || cmd.includes("-displayfd"))) {
-			await killPid(state.xvfbPid, SHUTDOWN_GRACE_MS);
-		}
-	}
-	if (state.browserPid) {
-		const cmd = cmdlineOf(state.browserPid) ?? "";
-		const ours = cmd.includes("chrom") || cmd.includes("msedge");
-		const dirOk = !state.userDataDir || cmd.includes(state.userDataDir);
-		if (ours && dirOk) await killPid(state.browserPid, SHUTDOWN_GRACE_MS);
-	}
-	if (state.userDataDir) {
-		for (const pid of pidsWithCmdline(state.userDataDir)) {
-			const cmd = cmdlineOf(pid) ?? "";
-			if (cmd.includes("chrom") || cmd.includes("msedge")) await killPid(pid, SHUTDOWN_GRACE_MS);
-		}
-	}
-}
-
-function pidsWithCmdline(needle: string): number[] {
-	const out: number[] = [];
-	try {
-		for (const name of readdirSync("/proc")) {
-			if (!/^\d+$/.test(name)) continue;
-			const pid = Number(name);
-			const cmd = cmdlineOf(pid) ?? "";
-			if (cmd.includes(needle)) out.push(pid);
-		}
-	} catch {
-		// not linux or /proc unreadable
-	}
-	return out;
 }
 
 function waitFor(ms: number, signal?: AbortSignal): Promise<void> {

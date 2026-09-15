@@ -19,6 +19,11 @@ type LoadResult = {
 };
 
 function resolvePiLoader(): string {
+	// Prefer the pinned development Pi, not whichever global CLI happens to be installed.
+	try {
+		const local = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "core", "extensions", "loader.js");
+		if (process.env.BROWSER_TEST_GLOBAL_PI !== "1" && existsSync(local)) return local;
+	} catch { /* source-only installations can still use Pi on PATH */ }
 	const piBin = realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim());
 	const dir = dirname(piBin);
 	const candidates = [
@@ -53,6 +58,9 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.equal(tool.parameters.properties.origins.maxItems, 8);
 	assert.equal(tool.parameters.properties.cookieNames.minItems, 1);
 	assert.match(tool.promptGuidelines.join(" "), /request_cookies/);
+	assert.equal(tool.parameters.properties.limit.maximum, 1000);
+	assert.equal(tool.parameters.properties.snapshotId.minimum, 1);
+	assert.equal(tool.parameters.properties.image.type, "boolean");
 	const request = { action: "request_cookies", origins: ["https://93.184.216.34"], cookieNames: ["SID"] };
 	await assert.rejects(tool.execute("fixture", request, undefined, undefined, { hasUI: false, mode: "print" }), /interactive approval/);
 	let prompted = 0;
@@ -66,6 +74,7 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.deepEqual([...result.extensions[0].commands.keys()], ["browser"]);
 	const command = result.extensions[0].commands.get("browser");
 	assert.ok(command.getArgumentCompletions("login").some((item: any) => item.value === "login --from-chromium"));
+	assert.ok(command.getArgumentCompletions("doctor").some((item: any) => item.value === "doctor"));
 	const messages: string[] = [];
 	const ctx = { hasUI: false, mode: "print", ui: { notify: (text: string) => messages.push(text) } };
 	await command.handler("login --from-chromium", ctx);
@@ -73,6 +82,15 @@ test("package manifest factory-loads browser tool without launching", async () =
 	messages.length = 0;
 	await command.handler("login --from-chromium extra", { ...ctx, hasUI: true, mode: "tui" });
 	assert.deepEqual(messages, ["Usage: /browser login [--from-chromium]"]);
+});
+
+test("optional images use Pi's image result contract and text remains bounded", async () => {
+	const { toolResult } = await import("./index.ts");
+	const result = toolResult({ content: "x".repeat(60_000), image: { data: "c3ludGhldGlj", mimeType: "image/png" } });
+	assert.deepEqual(result.content[1], { type: "image", data: "c3ludGhldGlj", mimeType: "image/png" });
+	assert.equal(result.content[0].type, "text");
+	assert.ok(JSON.stringify(result.content[0]).length < 53_000);
+	assert.match(JSON.stringify(result.content[0]), /snapshot pagination/);
 });
 
 test("native cookie consent: full scope is scrollable, Deny is default, and only reviewed requests can be allowed", async (t) => {
