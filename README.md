@@ -9,7 +9,7 @@ This is anti-automation hardening, not a captcha solver and not a residential-IP
 | tool / command | job |
 |---|---|
 | `browser` | navigate, a11y snapshot, click/type/select, tabs, screenshot, close |
-| `browser` action `request_cookies` | ask you to approve cookie access for exact origins, optionally limited to named cookies |
+| `browser` action `request_cookies` | approve cookie access once per session scope; reuse it for matching requests |
 | `/browser status` | mode, url, origin grants |
 | `/browser doctor` | local Node/browser/Xvfb checks and bounded network failure categories |
 | `/browser mode xvfb\|headless\|host` | display mode (host = your `$DISPLAY`) |
@@ -150,10 +150,12 @@ The model can call:
 }
 ```
 
-Pi shows one **Allow browser cookie access?** dialog listing the source, exact
-origins, cookie-name scope, session lifetime and replacement warning. Approving
-imports matching cookies and grants those origins; the model can then navigate.
-It does not open a manual login window or switch display mode.
+Pi shows an **Allow browser cookie access for this session?** dialog listing the
+source, exact origins, cookie-name scope, session lifetime and replacement warning.
+Approving imports matching cookies and grants those origins; the model can then
+navigate. Requests within the current approved scope reuse that profile without
+another prompt, source-profile read or tab reset. It does not open a manual login
+window or switch display mode.
 
 In the TUI, **Deny is selected by default**. Read the request with **↑/↓** or
 **Page Up/Page Down**; Allow becomes available only after every page has been
@@ -175,14 +177,24 @@ receive the full disclosure through their standard confirmation dialog.
 - There is **no cookie inventory or profile read before approval**. The tool returns
   only the outcome, requested scope and loaded count, never cookie values or other
   sites from your profile. It cannot accept source paths, cookie values or an approval flag.
-- Denying or cancelling the dialog leaves the current browser and grants untouched.
-  Every request needs a fresh confirmation. Approval **replaces** the current profile
-  and grants and closes its tabs; it does not silently accumulate access. Include all
-  origins needed for the next task. Failed or aborted imports clear the attempted grants
+- Approval is remembered for the current imported profile in this session, including
+  imports approved through `/browser login --from-chromium`. Matching requests and
+  subsets of its origins/names return `status: "granted", reused: true` without
+  prompting or importing again. Order, duplicates and equivalent origin spellings do
+  not matter; cookie names remain case-sensitive. Subset requests leave the existing
+  grants, cookie snapshot and tabs unchanged—they do not narrow or refresh access.
+- New origins (including different schemes/ports), additional cookie names, or changing
+  a named filter to all cookies require fresh confirmation. Approval **replaces** the
+  current profile and grants and closes its tabs; permissions do not accumulate across
+  replacements. Include all origins needed for the next task. Denying or cancelling
+  leaves current access untouched. Failed or aborted imports clear the attempted grants
   and clean up the copy; they do not restore the replaced session.
 - Works in Pi TUI and RPC clients supporting approval dialogs. Print/JSON mode and
-  missing UI fail closed. Use `/browser logout` to revoke; `/reload` and shutdown
-  also clear grants and delete the temporary copy. `/browser close` alone retains it.
+  missing UI fail closed. Use `/browser logout` to revoke; `/reload`, session changes
+  (`/new`, `/resume`, `/fork`, `/clone`) and shutdown also clear approval/grants and
+  delete the temporary copy. `/browser close` alone retains them. To refresh cookies,
+  run `/browser login --from-chromium` again. To narrow access, use `/browser logout`
+  before requesting a reduced scope.
 
 The same Linux/Default-profile, keyring and transfer limitations below apply. The
 model must not retry a denied request without your direction. Cookie access permits
@@ -273,9 +285,9 @@ factory/TUI suite, packaging checks and local Chromium integration on **Node 22 
 remains opt-in; CI uses synthetic cookies, fixtures and a private test keyring.
 
 No live browser in the default suite. Cookie-site and name-filter tests use synthetic SQLite/WAL files;
-permission tests cover approval, denial, cancellation, exact origins, non-interactive
-refusal and cleanup. The factory suite verifies tool wiring and the full native
-cookie-approval path using a synthetic session: long disclosures, pagination,
+permission tests cover approval reuse, scope expansion, denial, cancellation, exact
+origins, non-interactive refusal and revocation/cleanup. The factory suite verifies
+tool wiring and the full native cookie-approval path using a synthetic session: long disclosures, pagination,
 default denial, cancellation, remapped keys, resizing and narrow-terminal bounds.
 It also exercises cookie-site multi-selection, search, keyboard/mouse input and manual origins.
 
@@ -286,8 +298,9 @@ xvfb-run -a npm run test:integration
 ```
 
 The cookie-import fixture creates a synthetic encrypted Chromium profile and checks
-persistent/session cookies, source integrity, origin/name filtering, approved request
-replacement, denial preserving the active session, output redaction and logout cleanup. When `gnome-keyring-daemon`, `dbus-daemon` and `gdbus` are installed,
+persistent/session cookies, source integrity, origin/name filtering, same-scope reuse
+without reimporting or invalidating snapshots, approved scope replacement, denial
+preserving the active session, output redaction and logout cleanup. When `gnome-keyring-daemon`, `dbus-daemon` and `gdbus` are installed,
 this also creates a private test D-Bus/keyring and verifies libsecret-encrypted `v11`
 cookies, not just basic-storage `v10` cookies. It does not read your real browser
 cookies or desktop keyring. CI sets `BROWSER_REQUIRE_KEYRING=1` so missing keyring

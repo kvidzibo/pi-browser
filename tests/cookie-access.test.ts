@@ -14,6 +14,7 @@ function fixture(mode = "tui", approved: unknown = true) {
 	let grants = ["https://previous.example"], imports = 0;
 	const controller = new AbortController();
 	const session = {
+		hasCookieAccess: () => false,
 		closeBrowser: async () => { calls.push("close"); return "closed"; },
 		clearGrants: async () => { calls.push("clear"); grants = []; },
 		importChromiumCookies: async (requested: string[], options?: { cookieNames?: string[]; signal?: AbortSignal }) => {
@@ -47,7 +48,8 @@ for (const mode of ["tui", "rpc"]) test(`model cookie request: explicit ${mode} 
 	assert.deepEqual(f.grants(), origins, "replace, never union with previous grants");
 	const displayedOrigins = f.prompts[1].split("\n").filter((line) => line.startsWith("  ")).map((line) => line.trim());
 	assert.deepEqual(result.details?.origins, displayedOrigins, "grants must exactly equal the destinations shown in the dialog");
-	for (const text of [...origins, ...f.params.cookieNames, "Default", "act as you", "replaces", "/browser logout", "/reload", "shutdown"]) {
+	assert.match(f.prompts[0], /for this session/);
+	for (const text of [...origins, ...f.params.cookieNames, "Default", "act as you", "reuse approval", "broader cookie-name access", "replaces", "/browser logout", "/reload", "shutdown"]) {
 		assert.ok(f.prompts[1].includes(text), `missing approval detail: ${text}`);
 	}
 });

@@ -32,8 +32,9 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 		DBUS_SESSION_BUS_ADDRESS: `unix:path=${dir}/no-session-bus`, DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${dir}/no-system-bus` });
 	let isolatedKeyring: Awaited<ReturnType<typeof privateKeyring>> | undefined;
 	let source: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
-	let importedDir = "";
+	let importedDir = "", copies = 0;
 	const session = new BrowserSession(undefined, async (origins, options) => {
+		copies++;
 		const imported = await createChromiumCookieImport(origins, { ...options, sourceRoot: root, executablePath, tempRoot: dir });
 		importedDir = imported.userDataDir;
 		return imported;
@@ -85,13 +86,20 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 		context = (session as any).context;
 		assert.equal((await context.cookies()).length, 2, "close/reopen must retain session cookies without recopying the source");
 		const params = { origins: ["https://93.184.216.34"], cookieNames: ["session"] };
+		const previousSnapshot = await session.execute({ action: "snapshot" });
+		const previousSnapshotId = Number(previousSnapshot.details?.snapshot);
+		const noPrompt = { hasUI: true, mode: "rpc", ui: { confirm: async () => assert.fail("scope already approved this session") } } as any;
+		const reused = await session.withLock(() => requestCookieAccessWithUI(session, noPrompt, params));
+		assert.equal(reused.details?.reused, true);
+		assert.equal((session as any).context, context, "reuse must preserve tabs and the active browser");
+		assert.equal(copies, 1, "reuse must not read the source profile again");
+		await session.execute({ action: "snapshot", snapshotId: previousSnapshotId, offset: 1 });
+		// A genuinely new origin still requires consent and replaces the profile.
+		params.origins.push("https://93.184.216.35");
 		const denied = await session.withLock(() => requestCookieAccessWithUI(session,
 			{ hasUI: true, mode: "rpc", ui: { confirm: async () => false } } as any, params));
 		assert.equal(denied.details?.status, "denied");
 		assert.equal((session as any).context, context, "denial must not close or replace the active browser");
-		const previousSnapshot = await session.execute({ action: "snapshot" });
-		const previousSnapshotId = Number(previousSnapshot.details?.snapshot);
-		await session.execute({ action: "snapshot", snapshotId: previousSnapshotId, offset: 1 });
 		const previousCopy = importedDir;
 		const approved = await session.withLock(() => requestCookieAccessWithUI(session,
 			{ hasUI: true, mode: "rpc", ui: { confirm: async () => true } } as any, params));
@@ -103,7 +111,11 @@ for (const keyring of [false, true]) test(`local Chromium import: persistent/ses
 		context = (session as any).context;
 		assert.deepEqual((await context.cookies()).map((cookie: any) => cookie.name), ["session"]);
 		assert.notEqual(importedDir, previousCopy);
+		assert.equal(copies, 2);
 		await assert.rejects(stat(previousCopy), { code: "ENOENT" });
+		assert.equal((await session.withLock(() => requestCookieAccessWithUI(session, noPrompt, params))).details?.reused, true);
+		assert.equal((session as any).context, context);
+		assert.equal(copies, 2);
 		await session.clearGrants();
 		assert.deepEqual(session.grantList(), []);
 		await assert.rejects(stat(importedDir), { code: "ENOENT" });

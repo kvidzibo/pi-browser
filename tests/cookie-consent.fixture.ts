@@ -20,6 +20,7 @@ export default function fixture(pi: ExtensionAPI) {
 			const viewed = new Map<number, string>();
 			let totalLines = 0;
 			const result = await requestCookieAccessWithUI({
+				hasCookieAccess: () => false,
 				closeBrowser: async () => "closed", clearGrants: async () => {},
 				importChromiumCookies: async (approvedOrigins, options) => { imported = { origins: approvedOrigins, cookieNames: options?.cookieNames }; return 1; },
 			}, { mode: "tui", hasUI: true, ui: {

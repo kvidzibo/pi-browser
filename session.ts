@@ -47,6 +47,7 @@ export class BrowserSession {
 	private proxy: PinProxy | undefined;
 	private cookieSecrets = new Set<string>();
 	private importedProfile: ChromiumCookieImport | undefined;
+	private cookieApproval: { origins: Set<string>; names?: Set<string> } | undefined;
 	private importCleanup = new Set<ChromiumCookieImport>();
 
 	private readonly resourceFetch: typeof fetchCookieless;
@@ -71,7 +72,16 @@ export class BrowserSession {
 		return [...this.grants].sort();
 	}
 
+	/** Reuse only the successfully imported scope, never mere isolated-login grants. */
+	hasCookieAccess(origins: string[], cookieNames?: string[]): boolean {
+		const approval = this.cookieApproval;
+		return !!this.importedProfile && !!approval && origins.length > 0 &&
+			origins.every((origin) => approval.origins.has(origin) && this.grants.has(origin)) &&
+			(!approval.names || !!cookieNames?.length && cookieNames.every((name) => approval.names!.has(name)));
+	}
+
 	async clearGrants(): Promise<void> {
+		this.cookieApproval = undefined;
 		const profile = this.importedProfile;
 		if (profile) this.importCleanup.add(profile);
 		try {
@@ -98,10 +108,12 @@ export class BrowserSession {
 	// Only UI-approved callers may enter here. Never returns raw cookies.
 	async importChromiumCookies(origins: string[], options: { cookieNames?: string[]; signal?: AbortSignal } = {}): Promise<number> {
 		if (this.context || this.grants.size || this.importedProfile || this.importCleanup.size) throw new Error("Close the browser and clear grants before importing");
+		origins = [...origins];
+		const cookieNames = options.cookieNames ? [...options.cookieNames] : undefined;
 		const checkCancelled = () => { if (options.signal?.aborted) throw new Error("Cookie import cancelled"); };
 		try {
 			checkCancelled();
-			this.importedProfile = await this.cookieImporter(origins, { cookieNames: options.cookieNames, registerCleanup: (profile) => this.importCleanup.add(profile) });
+			this.importedProfile = await this.cookieImporter(origins, { cookieNames, registerCleanup: (profile) => this.importCleanup.add(profile) });
 			this.importCleanup.add(this.importedProfile);
 			checkCancelled();
 			await this.applyGrants(origins);
@@ -112,6 +124,7 @@ export class BrowserSession {
 			if (!count) throw new Error("No imported cookies loaded");
 			await this.secretValues();
 			checkCancelled();
+			this.cookieApproval = { origins: new Set(origins), names: cookieNames ? new Set(cookieNames) : undefined };
 			return count;
 		} catch {
 			try { await this.closeBrowser(); } finally { await this.clearGrants(); }

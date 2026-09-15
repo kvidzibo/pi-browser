@@ -57,7 +57,8 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.ok(tool.parameters.properties.action.enum.includes("request_cookies"));
 	assert.equal(tool.parameters.properties.origins.maxItems, 8);
 	assert.equal(tool.parameters.properties.cookieNames.minItems, 1);
-	assert.match(tool.promptGuidelines.join(" "), /request_cookies/);
+	assert.match(tool.promptGuidelines.join(" "), /request_cookies.*reuses.*without prompting/);
+	assert.ok(result.extensions[0].handlers.has("session_shutdown"), "session changes/reload must revoke cookie approval");
 	assert.equal(tool.parameters.properties.limit.maximum, 1000);
 	assert.equal(tool.parameters.properties.snapshotId.minimum, 1);
 	assert.equal(tool.parameters.properties.image.type, "boolean");
