@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { cookieHostMatches, createChromiumCookieImport, defaultChromiumRoot, IMPORT_IGNORE_ARGS, listChromiumCookieSites } from "../chromium-import.ts";
+import { cookieHostMatches, createChromiumCookieImport, defaultChromiumRoot, IMPORT_IGNORE_ARGS, listChromiumCookieSites, parseCookieNames } from "../chromium-import.ts";
+import { MAX_COOKIE_NAMES, MAX_COOKIE_NAME_CHARS } from "../constants.ts";
 
 const future = BigInt(Date.now()) * 1000n + 11644473600000000n + 86400000000n;
 async function fixture(run: (root: string, path: string, db: DatabaseSync, temp: string) => Promise<void>, network = true) {
@@ -124,6 +125,43 @@ test("no matching cookies and malformed encryption metadata clean up without ech
 		});
 		assert.deepEqual(await readdir(temp), before);
 	});
+});
+
+test("name allowlist is exact, intersects the domain scope, and vacuums excluded values", async () => {
+	await fixture(async (root, path, db, temp) => {
+		// Even a database with a case-insensitive name column cannot widen a name grant.
+		db.exec(`ALTER TABLE cookies RENAME TO old_cookies;
+			CREATE TABLE cookies(host_key TEXT, name TEXT COLLATE NOCASE, value TEXT, encrypted_value BLOB, has_expires INTEGER, expires_utc INTEGER, is_httponly INTEGER, samesite INTEGER);
+			INSERT INTO cookies SELECT * FROM old_cookies; DROP TABLE old_cookies;
+			INSERT INTO cookies VALUES ('mail.example.test', 'Session', 'excluded-case-secret', X'', 0, 0, 1, 2);
+			INSERT INTO cookies VALUES ('other.example.test', 'session', 'excluded-same-name-secret', X'', 0, 0, 1, 2)`);
+		const before = await readFile(path), walBefore = await readFile(`${path}-wal`);
+		const imported = await createChromiumCookieImport(["https://mail.example.test"], { ...options(root, temp), cookieNames: ["session"] });
+		try {
+			assert.equal(imported.cookieCount, 1);
+			const target = join(imported.userDataDir, "Default", "Network", "Cookies");
+			const copy = new DatabaseSync(target, { readOnly: true });
+			try { assert.deepEqual(copy.prepare("SELECT name FROM cookies").all().map((row) => row.name), ["session"]); }
+			finally { copy.close(); }
+			const bytes = await readFile(target);
+			assert.ok(!bytes.includes(Buffer.from("excluded-")));
+			assert.ok(!bytes.includes(Buffer.from("ciphertext-fixture")));
+			assert.deepEqual(await readFile(path), before);
+			assert.deepEqual(await readFile(`${path}-wal`), walBefore);
+		} finally { await imported.cleanup(); }
+		const files = await readdir(temp);
+		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], { ...options(root, temp), cookieNames: ["missing"] }), /Could not import/);
+		assert.deepEqual(await readdir(temp), files);
+	});
+});
+
+test("invalid cookie name filters never fall back to importing all cookies", async () => {
+	assert.equal(parseCookieNames(undefined), undefined);
+	assert.deepEqual(parseCookieNames(["SID", "SID", "__Secure-1PSID"]), ["SID", "__Secure-1PSID"]);
+	for (const names of [[], "SID", [null], ["*"], ["SID="], ["SID\n"], ["bad name"], ["\x1b[31m"], ["x".repeat(MAX_COOKIE_NAME_CHARS + 1)], Array(MAX_COOKIE_NAMES + 1).fill("SID")]) {
+		assert.throws(() => parseCookieNames(names), /cookieNames/);
+		await assert.rejects(createChromiumCookieImport(["https://mail.example.test"], { cookieNames: names as any, platform: "linux" }), /cookieNames/);
+	}
 });
 
 test("import requires explicit origins and Linux; source profile symlinks cannot escape the root", async () => {

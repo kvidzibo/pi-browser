@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isBlockedAddress, normalizeHostname } from "./gate.ts";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { findChromium } from "./browser-bin.ts";
+import { MAX_COOKIE_NAMES, MAX_COOKIE_NAME_CHARS } from "./constants.ts";
 
 // Keep Chromium's own desktop keyring backend. Patchright otherwise forces basic storage.
 export const IMPORT_IGNORE_ARGS = ["--password-store=basic", "--use-mock-keychain"];
@@ -28,6 +29,16 @@ export function cookieHostMatches(host: string, hosts: string[]): boolean {
 		return domain.length > 0 && hosts.some((target) => target === domain || target.endsWith(`.${domain}`));
 	}
 	return hosts.includes(host.toLowerCase());
+}
+
+/** An omitted filter means all matching names; an empty/invalid filter must never widen access. */
+export function parseCookieNames(input: unknown): string[] | undefined {
+	if (input === undefined) return undefined;
+	if (!Array.isArray(input) || input.length === 0 || input.length > MAX_COOKIE_NAMES ||
+		input.some((name) => typeof name !== "string" || name.length > MAX_COOKIE_NAME_CHARS || !/^[!#$%&'+\-.^_`|~0-9A-Za-z]+$/.test(name))) {
+		throw new Error(`cookieNames must contain 1..${MAX_COOKIE_NAMES} exact cookie names (no wildcards, spaces or values)`);
+	}
+	return [...new Set(input)];
 }
 
 async function regularFile(root: string, name: string, maxBytes: number): Promise<string | undefined> {
@@ -111,14 +122,15 @@ export async function listChromiumCookieSites(options: { sourceRoot?: string; pl
 	}
 }
 
-/** Called only by the confirmed /browser login --from-chromium command. Never returns cookie values. */
+/** Called only after UI-confirmed cookie access (tool request or slash command). Never returns values. */
 export async function createChromiumCookieImport(
 	origins: string[],
 	options: { sourceRoot?: string; executablePath?: string; tempRoot?: string; platform?: NodeJS.Platform;
-		registerCleanup?: (profile: ChromiumCookieImport) => void } = {},
+		cookieNames?: string[]; registerCleanup?: (profile: ChromiumCookieImport) => void } = {},
 ): Promise<ChromiumCookieImport> {
 	if ((options.platform ?? process.platform) !== "linux") throw new Error("Chromium cookie import currently supports Linux only");
 	if (!origins.length) throw new Error("Approve at least one origin before importing cookies");
+	const cookieNames = parseCookieNames(options.cookieNames);
 	const hosts = [...new Set(origins.map((origin) => {
 		const url = new URL(origin);
 		if (!["https:", "http:"].includes(url.protocol) || url.origin !== origin || url.username || url.password) {
@@ -156,6 +168,10 @@ export async function createChromiumCookieImport(
 			const remove = copy.prepare("DELETE FROM cookies WHERE host_key = ?");
 			for (const row of copy.prepare("SELECT DISTINCT host_key FROM cookies").all()) {
 				if (typeof row.host_key !== "string" || !cookieHostMatches(row.host_key, hosts)) remove.run(row.host_key);
+			}
+			if (cookieNames) {
+				const placeholders = cookieNames.map(() => "?").join(", ");
+				copy.prepare(`DELETE FROM cookies WHERE name IS NULL OR name COLLATE BINARY NOT IN (${placeholders})`).run(...cookieNames);
 			}
 			const now = BigInt(Date.now()) * 1000n + 11644473600000000n;
 			copy.prepare("DELETE FROM cookies WHERE has_expires = 1 AND expires_utc <= ?").run(now);

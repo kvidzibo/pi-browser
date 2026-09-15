@@ -91,6 +91,42 @@ test("a staging failure still leaves the session a cleanup retry handle", async 
 	assert.equal(cleaned, 1);
 });
 
+for (const stage of ["before", "copy", "grants", "launch", "cookies"]) test(`import cancellation cleans the copy and grants (${stage})`, async () => {
+	const controller = new AbortController();
+	let copied = 0, cleaned = 0, launched = 0;
+	const session = new BrowserSession(undefined, async (_origins, options) => {
+		copied++;
+		assert.deepEqual(options?.cookieNames, ["SID"]);
+		if (stage === "copy") controller.abort();
+		return { userDataDir: "/synthetic-copy", executablePath: "/synthetic-chromium", cookieCount: 1, cleanup: async () => { cleaned++; } };
+	}) as any;
+	const apply = session.applyGrants.bind(session);
+	session.applyGrants = async (origins: string[]) => { await apply(origins); if (stage === "grants") controller.abort(); };
+	session.ensureLaunched = async (signal: AbortSignal) => {
+		launched++; assert.equal(signal, controller.signal);
+		if (stage === "launch") controller.abort();
+		session.context = { close: async () => {}, cookies: async () => {
+			if (stage === "cookies") controller.abort(); return [{ name: "SID", value: "private-cookie-fixture" }];
+		} };
+	};
+	if (stage === "before") controller.abort();
+	await assert.rejects(session.importChromiumCookies(["https://93.184.216.34"], { cookieNames: ["SID"], signal: controller.signal }), /cookie import failed/);
+	assert.equal(copied, stage === "before" ? 0 : 1);
+	assert.equal(cleaned, copied);
+	assert.equal(launched, stage === "launch" || stage === "cookies" ? 1 : 0);
+	assert.deepEqual(session.grantList(), []);
+	assert.equal(session.forcePersistent, false);
+	assert.equal(session.context, undefined);
+	assert.equal(session.importedProfile, undefined);
+});
+
+test("the browser driver cannot bypass the cookie permission UI", async () => {
+	let copied = false;
+	const session = new BrowserSession(undefined, async () => { copied = true; throw new Error("must not import"); });
+	await assert.rejects(session.execute({ action: "request_cookies" }), /Unknown action/);
+	assert.equal(copied, false);
+});
+
 test("snapshot revisions never repeat after closing and reopening", async () => {
 	const session = new BrowserSession() as any;
 	const page = { url: () => "https://93.184.216.34/", title: async () => "fixture",

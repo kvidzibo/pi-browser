@@ -34,6 +34,8 @@
     "browser-bin.ts",
     "chromium-import.ts",
     "constants.ts",
+    "cookie-access.ts",
+    "cookie-consent.ts",
     "cookieless.ts",
     "display.ts",
     "gate.ts",

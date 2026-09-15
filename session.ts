@@ -130,17 +130,23 @@ export class BrowserSession {
 		}
 	}
 
-	// Human-command only. The model tool has no import or raw-cookie action.
-	async importChromiumCookies(origins: string[]): Promise<number> {
+	// Only UI-approved callers may enter here. Never returns raw cookies.
+	async importChromiumCookies(origins: string[], options: { cookieNames?: string[]; signal?: AbortSignal } = {}): Promise<number> {
 		if (this.context || this.grants.size || this.importedProfile || this.importCleanup.size) throw new Error("Close the browser and clear grants before importing");
+		const checkCancelled = () => { if (options.signal?.aborted) throw new Error("Cookie import cancelled"); };
 		try {
-			this.importedProfile = await this.cookieImporter(origins, { registerCleanup: (profile) => this.importCleanup.add(profile) });
+			checkCancelled();
+			this.importedProfile = await this.cookieImporter(origins, { cookieNames: options.cookieNames, registerCleanup: (profile) => this.importCleanup.add(profile) });
 			this.importCleanup.add(this.importedProfile);
+			checkCancelled();
 			await this.applyGrants(origins);
-			await this.ensureLaunched();
+			checkCancelled();
+			await this.ensureLaunched(options.signal);
+			checkCancelled();
 			const count = (await this.context!.cookies()).length;
 			if (!count) throw new Error("No imported cookies loaded");
 			await this.secretValues();
+			checkCancelled();
 			return count;
 		} catch {
 			try { await this.closeBrowser(); } finally { await this.clearGrants(); }
