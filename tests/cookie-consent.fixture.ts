@@ -14,6 +14,7 @@ export default function fixture(pi: ExtensionAPI) {
 			const controller = new AbortController();
 			const keybindings = new ui.KeybindingsManager(ui.TUI_KEYBINDINGS, params.remap ? {
 				"tui.select.confirm": "alt+enter", "tui.select.cancel": "alt+q", "tui.select.pageDown": "alt+j",
+				"tui.select.up": "alt+p", "tui.select.down": "alt+n", "tui.select.pageUp": "alt+k",
 			} : undefined);
 			let width = params.width ?? 80, rows = params.rows ?? 24, imported: unknown, completed = false;
 			const frames: Array<{ width: number; rows: number; lines: string[]; widths: number[] }> = [];
@@ -31,7 +32,7 @@ export default function fixture(pi: ExtensionAPI) {
 						const draw = () => {
 							const lines = component.render(width);
 							frames.push({ width, rows, lines, widths: lines.map(ui.visibleWidth) });
-							const marker = lines.find((line) => /^Lines \d+-\d+ of \d+$/.test(line));
+							const marker = lines.find((line) => /^Lines \d+-\d+ of \d+/.test(line));
 							if (marker) {
 								const [start, end, total] = marker.match(/\d+/g)!.map(Number); totalLines = total;
 								for (let n = start; n <= end; n++) viewed.set(n, lines[1 + n - start]);
@@ -47,7 +48,7 @@ export default function fixture(pi: ExtensionAPI) {
 							else if (key.startsWith("resize:")) { [, width, rows] = key.split(":").map(Number); draw(); }
 							else if (key === "read-all") {
 								for (let n = 0; n < 400; n++) {
-									if (frames.at(-1)!.lines.some((line) => line.includes("Full request displayed"))) break;
+									if (totalLines > 0 && viewed.size === totalLines) break;
 									if (n === 399) throw new Error("Could not review all request pages");
 									component.handleInput!(params.remap ? "\x1bj" : "\x1b[6~");
 								}
