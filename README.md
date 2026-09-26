@@ -1,5 +1,7 @@
 # pi-browser
 
+[npm](https://www.npmjs.com/package/@kvidzibo/pi-browser) · [Pi package directory](https://pi.dev/packages/@kvidzibo/pi-browser)
+
 Let a [Pi coding agent](https://github.com/earendil-works/pi) inspect and interact
 with JavaScript-heavy pages through Patchright/Chromium, without driving your
 everyday browser profile. Prefer [pi-web-access](https://github.com/kvidzibo/pi-web-access)
@@ -95,9 +97,9 @@ fixtures, never your real profile or public sites. Public-network smoke is opt-i
 ## Detailed guides
 
 In the [source repository](https://github.com/kvidzibo/pi-browser):
-[installation, snapshots, login and troubleshooting](docs/usage.md),
-[security and network internals](docs/security.md), and
-[development, integration prerequisites and architecture](docs/development.md).
+[installation, snapshots, login and troubleshooting](https://github.com/kvidzibo/pi-browser/blob/main/docs/usage.md),
+[security and network internals](https://github.com/kvidzibo/pi-browser/blob/main/docs/security.md), and
+[development, integration prerequisites and architecture](https://github.com/kvidzibo/pi-browser/blob/main/docs/development.md).
 The npm package includes this quickstart; the detailed guides live in the checkout.
 
 [MIT](LICENSE).
