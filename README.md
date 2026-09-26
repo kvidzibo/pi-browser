@@ -1,5 +1,7 @@
 # pi-browser
 
+[npm](https://www.npmjs.com/package/@kvidzibo/pi-browser) · [Pi package directory](https://pi.dev/packages/@kvidzibo/pi-browser)
+
 Let a [Pi coding agent](https://github.com/earendil-works/pi) inspect and interact with JavaScript-heavy pages without borrowing your everyday browser profile. Wraps Patchright/Chromium with page snapshots, browser actions and explicit permissions for signed-in work.
 
 Driver is **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/Patchright)** (Playwright fork): no `Runtime.enable` leak, no `--enable-automation`, `navigator.webdriver` patched. Default display is **headed Xvfb** on Linux. Prefers installed Google Chrome over bundled Chromium.
