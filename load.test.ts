@@ -94,20 +94,47 @@ test("optional images use Pi's image result contract and text remains bounded", 
 	assert.match(JSON.stringify(result.content[0]), /snapshot pagination/);
 });
 
-test("native cookie consent: full scope is scrollable, Deny is default, and only reviewed requests can be allowed", async (t) => {
+test("native cookie consent supports a normal Yes/No arrow-key choice without mandatory paging", async (t) => {
+	const loaded = await loadWithPi([join(REPO, "tests", "cookie-consent.fixture.ts")]);
+	assert.deepEqual(loaded.errors, []);
+	const tool = (loaded.extensions[0].tools.get("cookie_consent_fixture") as any).definition;
+	for (const [name, keys, expected] of [
+		["Enter defaults to No", ["\r"], "denied"],
+		["down selects Yes immediately", ["\x1b[B", "\r"], "granted"],
+		["up wraps to Yes immediately", ["\x1b[A", "\r"], "granted"],
+		["arrows can return to No", ["\x1b[B", "\x1b[A", "\r"], "denied"],
+	] as const) {
+		await t.test(name, async () => {
+			const details = (await tool.execute("fixture", { large: true, keys })).details;
+			assert.equal(details.result.details.status, expected);
+			assert.ok(details.frames[0].lines.includes("→ No"), "No must be the visible default");
+			assert.ok(details.frames[0].lines.includes("  Yes"), "Yes must be a normal selectable option");
+			assert.ok(details.viewedLines < details.totalLines, "approval must not require paging through the whole request");
+			if (expected === "granted") assert.deepEqual(details.imported, { origins: details.origins, cookieNames: details.cookieNames });
+			else assert.equal(details.imported, undefined);
+		});
+	}
+});
+
+test("native cookie consent: full scope stays scrollable, with safe defaults, cancellation and resizing", async (t) => {
 	const loaded = await loadWithPi([join(REPO, "tests", "cookie-consent.fixture.ts")]);
 	assert.deepEqual(loaded.errors, []);
 	const tool = (loaded.extensions[0].tools.get("cookie_consent_fixture") as any).definition;
 	for (const [name, params, expected] of [
-		["maximum request can be fully reviewed and approved", { large: true, keys: ["read-all", "\t", "\r"] }, "granted"],
-		["Enter defaults to Deny after reviewing", { keys: ["read-all", "\r"] }, "denied"],
-		["Tab cannot enable Allow before all pages are displayed", { large: true, keys: ["\t", "\r"] }, "denied"],
+		["maximum request can be fully reviewed and approved", { large: true, keys: ["read-all", "\x1b[B", "\r"] }, "granted"],
+		["Enter defaults to No after reviewing", { keys: ["read-all", "\r"] }, "denied"],
+		["Tab cannot accidentally select Yes", { large: true, keys: ["\t", "\r"] }, "denied"],
 		["Escape denies without reading", { large: true, keys: ["\x1b"] }, "denied"],
+		["Ctrl+C denies", { keys: ["\x03"] }, "denied"],
 		["abort closes the custom dialog without granting", { large: true, keys: ["abort"] }, "cancelled"],
-		["remapped pagination and confirm", { large: true, remap: true, keys: ["read-all", "\t", "\x1b\r"] }, "granted"],
-		["minimum supported terminal can review all details", { width: 40, rows: 13, keys: ["read-all", "\t", "\r"] }, "granted"],
-		["tiny terminal cannot approve", { width: 1, rows: 7, keys: ["\t", "\r"] }, "denied"],
-		["resize resets previous approval selection", { keys: ["read-all", "\t", "resize:40:12", "\r"] }, "denied"],
+		["remapped selection, pagination and confirm", { large: true, remap: true, keys: ["read-all", "\x1bk", "\x1bn", "\x1b\r"] }, "granted"],
+		["default arrows cannot bypass remapped selection keys", { remap: true, keys: ["\x1b[B", "\x1b\r"] }, "denied"],
+		["remapped cancellation", { remap: true, keys: ["\x1bn", "\x1bq"] }, "denied"],
+		["paging details does not change the Yes/No choice", { large: true, keys: ["\x1b[B", "read-all", "\x1b[5~", "\r"] }, "granted"],
+		["minimum supported terminal can review all details", { width: 40, rows: 13, keys: ["read-all", "\x1b[B", "\r"] }, "granted"],
+		["tiny terminal cannot approve", { width: 1, rows: 7, keys: ["\x1b[B", "\r"] }, "denied"],
+		["shrink hides and disables the previous approval selection", { keys: ["\x1b[B", "resize:40:12", "\r"] }, "denied"],
+		["readable resize still resets the selection to No", { keys: ["\x1b[B", "resize:80:30", "\r"] }, "denied"],
 		["unavailable custom UI fails closed", { unsupported: true, keys: [] }, "denied"],
 	] as const) {
 		await t.test(name, async () => {
@@ -117,6 +144,10 @@ test("native cookie consent: full scope is scrollable, Deny is default, and only
 			for (const frame of details.frames) {
 				assert.ok(frame.widths.every((width: number) => width <= frame.width), `overflow at width ${frame.width}`);
 				assert.ok(frame.lines.length <= (frame.width >= 40 && frame.rows >= 13 ? frame.rows - 6 : frame.rows), "dialog must leave room for Pi's footer");
+				if (frame.width === 40 && frame.rows >= 13) {
+					assert.ok(frame.lines.at(-1).includes("↑/↓ choose · Enter confirm · Esc cancel"), "minimum-width choice controls must not be clipped");
+					assert.ok(frame.lines.some((line: string) => line.includes("PgUp/PgDn details")), "minimum-width paging controls must not be clipped");
+				}
 			}
 			if (expected === "granted") {
 				assert.deepEqual(details.imported, { origins: details.origins, cookieNames: details.cookieNames });

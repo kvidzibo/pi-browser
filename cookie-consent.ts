@@ -1,27 +1,36 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, KeybindingsManager } from "@earendil-works/pi-tui";
 
-type ConsentUI = Pick<typeof import("@earendil-works/pi-tui"), "Text" | "matchesKey" | "truncateToWidth">;
+type ConsentUI = Pick<typeof import("@earendil-works/pi-tui"), "Text" | "SelectList" | "truncateToWidth">;
 type ConsentTheme = { fg: (color: "accent" | "dim" | "warning", text: string) => string; bold: (text: string) => string };
 
-/** Bounded, scrollable disclosure. Never hide destinations above an unscrollable Yes button. */
+/** A normal Yes/No choice with bounded, scrollable access details. */
 export function createCookieConsent(
 	title: string, body: string, ui: ConsentUI, theme: ConsentTheme,
 	keybindings: Pick<KeybindingsManager, "matches" | "getKeys">,
 	done: (approved: boolean) => void, requestRender: () => void, terminalRows: () => number,
 ): Component {
 	const text = new ui.Text(body, 0, 0);
-	let lines: string[] = [], offset = 0, pageRows = 1, reviewedThrough = 0;
-	let previousWidth = 0, previousRows = 0, readable = false, allowSelected = false, finished = false;
+	const choices = new ui.SelectList([{ value: "no", label: "No" }, { value: "yes", label: "Yes" }], 2, {
+		selectedPrefix: (value) => theme.fg("accent", value), selectedText: (value) => theme.fg("accent", value),
+		description: (value) => theme.fg("dim", value), scrollInfo: (value) => theme.fg("dim", value),
+		noMatch: (value) => theme.fg("warning", value),
+	});
+	let lines: string[] = [], offset = 0, pageRows = 1;
+	let previousWidth = 0, previousRows = 0, readable = false, finished = false;
 	const finish = (approved: boolean) => { if (!finished) { finished = true; done(approved); } };
-	const ready = () => readable && lines.length > 0 && reviewedThrough >= lines.length;
 	const move = (delta: number) => { offset = Math.max(0, Math.min(Math.max(0, lines.length - pageRows), offset + delta)); };
-	const keys = (id: "tui.select.pageUp" | "tui.select.pageDown" | "tui.select.confirm" | "tui.select.cancel") => keybindings.getKeys(id).join("/");
+	const keyLabels: Record<string, string> = { up: "↑", down: "↓", pageUp: "PgUp", pageDown: "PgDn", enter: "Enter", escape: "Esc" };
+	const keys = (id: `tui.select.${"up" | "down" | "pageUp" | "pageDown" | "confirm" | "cancel"}`) => {
+		// One configured shortcut per action keeps the controls legible in a narrow terminal.
+		const key = keybindings.getKeys(id)[0] ?? "unbound";
+		return keyLabels[key] ?? key;
+	};
 	return {
 		render(width) {
 			const rows = Math.max(1, Math.floor(terminalRows()));
 			if (width !== previousWidth || rows !== previousRows) {
-				previousWidth = width; previousRows = rows; offset = reviewedThrough = 0; allowSelected = false;
+				previousWidth = width; previousRows = rows; offset = 0; choices.setSelectedIndex(0);
 			}
 			readable = width >= 40 && rows >= 13;
 			if (!readable) return ["Resize to 40 columns / 13 rows to review.", `${keys("tui.select.cancel")} cancels; approval is disabled.`]
@@ -31,24 +40,21 @@ export function createCookieConsent(
 			lines = text.render(width);
 			move(0);
 			const visible = lines.slice(offset, offset + pageRows);
-			// Only contiguous displayed pages count. Skipping ahead cannot unlock approval.
-			if (offset <= reviewedThrough) reviewedThrough = Math.max(reviewedThrough, offset + visible.length);
 			const output = [theme.fg("accent", theme.bold(title)), ...visible,
-				...Array(Math.max(0, pageRows - visible.length)).fill(""),
-				theme.fg("dim", `Lines ${offset + 1}-${offset + visible.length} of ${lines.length}`),
-				ready() ? theme.fg("dim", "Full request displayed. Choose Deny or Allow.") : theme.fg("warning", "Read all pages to enable Allow."),
-				`${allowSelected ? "  " : "> "}Deny    ${allowSelected ? "> " : "  "}Allow${ready() ? "" : " (disabled)"}`,
-				theme.fg("dim", `${keys("tui.select.pageUp")}/${keys("tui.select.pageDown")} scroll · Tab choose · ${keys("tui.select.confirm")} confirm · ${keys("tui.select.cancel")} cancel`)];
+				theme.fg("dim", `Lines ${offset + 1}-${offset + visible.length} of ${lines.length} · ${keys("tui.select.pageUp")}/${keys("tui.select.pageDown")} details`),
+				...choices.render(width),
+				theme.fg("dim", `${keys("tui.select.up")}/${keys("tui.select.down")} choose · ${keys("tui.select.confirm")} confirm · ${keys("tui.select.cancel")} cancel`)];
 			return output.map((line) => ui.truncateToWidth(line, width));
 		},
-		invalidate() { text.invalidate(); },
+		invalidate() { text.invalidate(); choices.invalidate(); },
 		handleInput(data) {
 			if (finished) return;
 			if (keybindings.matches(data, "tui.select.cancel")) finish(false);
-			else if (keybindings.matches(data, "tui.select.confirm")) finish(allowSelected && ready());
-			else if (ui.matchesKey(data, "tab") || ui.matchesKey(data, "shift+tab")) { if (ready()) allowSelected = !allowSelected; }
-			else if (keybindings.matches(data, "tui.select.up")) move(-1);
-			else if (keybindings.matches(data, "tui.select.down")) move(1);
+			else if (keybindings.matches(data, "tui.select.confirm")) finish(readable && previousRows === terminalRows() && choices.getSelectedItem()?.value === "yes");
+			// SelectList uses global input bindings; honor the manager injected by this UI instead.
+			else if (readable && (keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down"))) {
+				choices.setSelectedIndex(choices.getSelectedItem()?.value === "no" ? 1 : 0);
+			}
 			else if (keybindings.matches(data, "tui.select.pageUp")) move(-pageRows);
 			else if (keybindings.matches(data, "tui.select.pageDown")) move(pageRows);
 			requestRender();
