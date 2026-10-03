@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Browser, BrowserContext } from "patchright-core";
 import { findBrowser } from "./browser-bin.ts";
@@ -141,7 +141,7 @@ async function reapState(state: RunState): Promise<void> {
 	if (state.browserPid && state.browserStartTime && state.userDataDir) {
 		const pid = state.browserPid;
 		await killPid(pid, SHUTDOWN_GRACE_MS, () => sameProcess(pid, state.browserStartTime) &&
-			isProfileBrowser(commandLine(pid), state.userDataDir!));
+			profileOwnsBrowser(state.userDataDir!, pid));
 	}
 }
 
@@ -164,18 +164,29 @@ function sameProcess(pid: number, startTime?: string): boolean {
 		/^\d+$/.test(startTime) && processStartTime(pid) === startTime;
 }
 
-function isProfileBrowser(args: string[], directory: string): boolean {
-	if (!/chrom|msedge/i.test(basename(args[0] ?? "")) || args.some((arg) => arg.startsWith("--type="))) return false;
-	const index = args.indexOf("--user-data-dir");
-	return args.includes(`--user-data-dir=${directory}`) || index >= 0 && args[index + 1] === directory;
+function profileBrowserPid(directory: string): number | undefined {
+	try {
+		const lock = readlinkSync(join(directory, "SingletonLock"));
+		const prefix = `${hostname()}-`;
+		const suffix = lock.startsWith(prefix) ? lock.slice(prefix.length) : "";
+		const pid = Number(suffix);
+		return /^\d+$/.test(suffix) && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+	} catch { return undefined; }
+}
+
+function profileOwnsBrowser(directory: string, pid: number): boolean {
+	try {
+		// Chromium flattens /proc/cmdline into its process title; splitting it cannot
+		// safely recover argv (especially paths with spaces). Its exact profile lock
+		// identifies the main process without path substring matching or /proc scans.
+		return profileBrowserPid(directory) === pid &&
+			/^(?:chromium|chrome|google-chrome|msedge)(?:-.*)?$/.test(basename(readlinkSync(`/proc/${pid}/exe`)));
+	} catch { return false; }
 }
 
 function browserIdentity(directory: string): { pid: number; startTime: string } | undefined {
-	try {
-		for (const name of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
-			const pid = Number(name), startTime = processStartTime(pid);
-			if (startTime && isProfileBrowser(commandLine(pid), directory) && sameProcess(pid, startTime)) return { pid, startTime };
-		}
-	} catch { /* unavailable /proc: no verified identity to record */ }
-	return undefined;
+	const pid = profileBrowserPid(directory);
+	if (!pid) return undefined;
+	const startTime = processStartTime(pid);
+	return startTime && profileOwnsBrowser(directory, pid) && sameProcess(pid, startTime) ? { pid, startTime } : undefined;
 }

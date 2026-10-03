@@ -1,23 +1,25 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RuntimeState } from "../runtime.ts";
 import { RUN_DIR_NAME } from "../constants.ts";
 
-// A test-owned Node child with Chromium-like argv, never a real browser or user's process.
-test("stale cleanup requires an exact profile argument and the original process start time", { skip: process.platform !== "linux", timeout: 10_000 }, async () => {
+// A test-owned sleep executable named chromium, never a browser or user's process.
+test("stale cleanup requires exact profile-lock ownership and the original process start time", { skip: process.platform !== "linux", timeout: 10_000 }, async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-browser-reaper-"));
 	const profile = join(directory, "browser-profiles", "applications", "user-data");
-	const child = spawn(process.execPath, ["-e", "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`], {
-		argv0: "chromium-runtime-fixture", stdio: ["ignore", "pipe", "ignore"], env: {},
-	});
-	const exited = once(child, "exit");
+	await mkdir(profile, { recursive: true });
+	const executable = join(directory, "chromium-runtime-fixture");
+	await copyFile("/bin/sleep", executable);
+	const child = spawn(executable, ["1000"], { stdio: "ignore", env: {} });
+	const spawned = once(child, "spawn"), exited = once(child, "exit");
 	try {
-		await once(child.stdout!, "data");
+		await spawned;
+		await symlink(`${hostname()}-${child.pid}`, join(profile, "SingletonLock"));
 		const runtime = new RuntimeState(directory);
 		runtime.write({}, profile);
 		const runDirectory = join(directory, RUN_DIR_NAME);
