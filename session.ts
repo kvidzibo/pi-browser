@@ -159,6 +159,10 @@ export class BrowserSession {
 		this.grants = new Set(origins);
 		this.forcePersistent = true;
 		this.proxy?.dropTunnels();
+		await this.resetTabs();
+	}
+
+	async resetTabs(): Promise<void> {
 		if (!this.context) return;
 		// The user may have closed the login tab, or its origin may now be denied.
 		// Create a fresh blank keeper before closing old tabs instead of reusing one.
@@ -377,7 +381,11 @@ export class BrowserSession {
 
 	private pageOriginOk(raw: string): boolean {
 		if (!raw || isAboutBlank(raw)) return true;
-		if (!this.persistent || this.namedProfile) return true;
+		if (!this.persistent) return true;
+		if (this.namedProfile) {
+			try { const url = new URL(raw); return url.protocol === "http:" || url.protocol === "https:"; }
+			catch { return false; }
+		}
 		if (this.grants.size === 0) return false;
 		try {
 			return originAllowed(raw, this.grants);

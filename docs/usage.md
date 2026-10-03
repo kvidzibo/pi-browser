@@ -108,7 +108,8 @@ is selected automatically in a new session. Choose **Use anonymous
 browser** to revoke access and return to ephemeral browsing.
 
 After selecting a profile, `/pi-browser login` opens that same profile on your
-screen for manual login or verification, without asking for origins.
+screen for manual login or verification, without asking for origins. Finishing login
+resets tabs to about:blank before returning control to the agent.
 It never opens your everyday profile. Chromium uses native window sizing, not a
 forced 1920×1080 viewport. Localhost/private networks, unsupported schemes and
 other non-origin safety restrictions remain blocked; persistence and

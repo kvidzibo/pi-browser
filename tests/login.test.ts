@@ -4,11 +4,12 @@ import { loginFromChromiumWithUI, loginWithUI } from "../login.ts";
 
 for (const outcome of ["initial-cancel", "launch-failure", "finish-cancel", "input-cancel", "invalid-origin", "grant-cancel", "apply-failure", "success", "saved-success"]) {
 	test(`login transaction: ${outcome}`, async () => {
-		let armed = false, closes = 0, confirms = 0, granted: string[] = [];
+		let armed = false, closes = 0, confirms = 0, reset = false, granted: string[] = [];
 		const selectedName = outcome === "saved-success" ? "applications" : undefined;
 		const session = {
 			setMode: () => {}, closeBrowser: async () => { closes++; return "closed"; },
 			profileName: () => selectedName,
+			resetTabs: async () => { reset = true; },
 			clearGrants: async () => { armed = false; granted = []; },
 			armPersistentProfile: (name?: string) => { assert.equal(name, selectedName); armed = true; },
 			ensureLaunched: async () => { if (outcome === "launch-failure") throw new Error("launch failed"); },
@@ -23,6 +24,7 @@ for (const outcome of ["initial-cancel", "launch-failure", "finish-cancel", "inp
 		const pending = loginWithUI(session, ctx);
 		if (outcome.endsWith("failure") || outcome === "invalid-origin") await assert.rejects(pending);
 		else await pending;
+		assert.equal(reset, outcome === "saved-success", "saved login tabs must be reset before agent access");
 		assert.equal(armed, outcome === "success" || outcome === "saved-success");
 		assert.deepEqual(granted, outcome === "success" ? ["https://93.184.216.34"] : []);
 		assert.equal(closes, outcome === "initial-cancel" ? 0 : outcome === "success" || outcome === "saved-success" ? 1 : 2);

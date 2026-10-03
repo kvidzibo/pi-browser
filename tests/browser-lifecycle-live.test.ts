@@ -116,6 +116,13 @@ test("named profiles allow all public sites, isolate saved data and revoke selec
 		await assert.rejects(session.execute({ action: "navigate", url: "http://127.0.0.1" }), /Blocked/);
 		await assert.rejects(session.applyGrants([origin]), /all public sites/);
 		await assert.rejects(session.importChromiumCookies([origin]), /clear grants/);
+		await driver.requirePage().goto("chrome://version");
+		for (const action of [{ action: "snapshot" }, { action: "screenshot" }, { action: "press", key: "Enter" }]) {
+			await assert.rejects(session.execute(action), /Blocked/);
+		}
+		await session.execute({ action: "navigate", url: "https://93.184.216.35" });
+		await assert.rejects(session.execute({ action: "back" }), /Left granted origins/);
+		assert.equal(driver.requirePage().url(), "about:blank");
 		await open("other");
 		assert.deepEqual(await driver.context.cookies(), []);
 		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), null);

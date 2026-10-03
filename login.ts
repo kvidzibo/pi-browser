@@ -4,7 +4,7 @@ import { parseGrantOrigins } from "./grants.ts";
 import { listChromiumCookieSites } from "./chromium-import.ts";
 import { pickCookieSites } from "./site-picker.ts";
 
-type LoginSession = Pick<BrowserSession, "setMode" | "closeBrowser" | "clearGrants" | "armPersistentProfile" | "ensureLaunched" | "applyGrants" | "profileName">;
+type LoginSession = Pick<BrowserSession, "setMode" | "closeBrowser" | "clearGrants" | "armPersistentProfile" | "ensureLaunched" | "applyGrants" | "profileName" | "resetTabs">;
 
 export async function loginWithUI(session: LoginSession, ctx: ExtensionContext): Promise<void> {
 	const name = session.profileName();
@@ -25,6 +25,7 @@ export async function loginWithUI(session: LoginSession, ctx: ExtensionContext):
 			cancel(); return;
 		}
 		if (name) {
+			await session.resetTabs();
 			committed = true;
 			ctx.ui.notify(`Profile ${name} ready: all public websites allowed.`, "info");
 			return;
