@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "patchright-core";
 import { BrowserSession } from "../session.ts";
+import { RUN_DIR_NAME } from "../constants.ts";
 
 async function fixture(run: (session: BrowserSession, context: BrowserContext, page: () => Page) => Promise<void>) {
 	const home = await mkdtemp(join(tmpdir(), "pi-browser-lifecycle-"));
@@ -86,5 +87,46 @@ test("closing the active tab invalidates its refs before another tab can receive
 		await page().close();
 		await assert.rejects(session.execute({ action: "click", ref }), /stale|snapshot/i);
 		assert.equal(await first.getAttribute("html", "data-clicked"), null);
+	});
+});
+
+test("named profiles keep site data separately but never restore session grants", integration, async () => {
+	await fixture(async (session) => {
+		const driver = session as unknown as { context: BrowserContext; requirePage(): Page };
+		const origin = "https://93.184.216.34";
+		const open = async (name: string) => {
+			await session.selectProfile(name, [origin]);
+			await session.ensureLaunched();
+			await driver.context.route("**/*", (route) => route.fulfill({ contentType: "text/html", body: "<p>Saved profile fixture</p>" }));
+			await session.execute({ action: "navigate", url: origin });
+			assert.equal(driver.requirePage().viewportSize(), null, "window sizing must not emulate a fixed viewport");
+		};
+		await session.createProfile("applications");
+		await session.createProfile("other");
+		await open("applications");
+		const runDirectory = join(process.env.PI_CODING_AGENT_DIR!, RUN_DIR_NAME);
+		const state = JSON.parse(await readFile(join(runDirectory, (await readdir(runDirectory))[0]), "utf8"));
+		assert.ok(state.browserPid > 0, "real Chromium launch must record a verifiable process identity");
+		assert.match(state.browserStartTime, /^\d+$/);
+		await driver.context.addCookies([{ name: "saved", value: "saved-fixture-secret", url: origin, expires: Date.now() / 1000 + 86400 }]);
+		await driver.requirePage().evaluate(() => localStorage.setItem("saved", "profile-storage-fixture"));
+		await assert.rejects(session.execute({ action: "navigate", url: "https://93.184.216.35" }), /not granted/);
+		await open("other");
+		assert.deepEqual(await driver.context.cookies(), []);
+		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), null);
+		await open("applications");
+		assert.equal((await driver.context.cookies()).find((cookie) => cookie.name === "saved")?.value, "saved-fixture-secret");
+		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), "profile-storage-fixture");
+		await session.closeBrowser();
+		assert.equal(session.profileName(), "applications", "close retains approval and selection");
+		await session.ensureLaunched();
+		assert.equal((await driver.context.cookies()).find((cookie) => cookie.name === "saved")?.value, "saved-fixture-secret");
+		await session.shutdown();
+		assert.equal(session.profileName(), undefined);
+		assert.deepEqual(session.grantList(), []);
+		assert.deepEqual(await session.listProfiles(), ["applications", "other"]);
+		session.setMode("host");
+		await session.ensureLaunched();
+		assert.deepEqual(await driver.context.cookies(), [], "anonymous launch cannot inherit saved cookies");
 	});
 });

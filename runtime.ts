@@ -1,14 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { basename, join, resolve } from "node:path";
 import type { Browser, BrowserContext } from "patchright-core";
 import { findBrowser } from "./browser-bin.ts";
 import { checkCancelled } from "./cancellation.ts";
 import { IMPORT_BROWSER_ARGS, IMPORT_IGNORE_ARGS, type ChromiumCookieImport } from "./chromium-import.ts";
-import { browserNetworkArgs, DEFAULT_TIMEOUT_MS, DEFAULT_VIEWPORT, PROFILE_DIR_NAME, RUN_DIR_NAME, SHUTDOWN_GRACE_MS, type DisplayMode } from "./constants.ts";
+import { browserNetworkArgs, DEFAULT_TIMEOUT_MS, PROFILE_DIR_NAME, RUN_DIR_NAME, SHUTDOWN_GRACE_MS, type DisplayMode } from "./constants.ts";
 import type { NetworkDiagnostics } from "./diagnostics.ts";
-import { cmdlineOf, killPid, startXvfb, stopXvfb, type XvfbHandle } from "./display.ts";
+import { killPid, startXvfb, stopXvfb, type XvfbHandle } from "./display.ts";
 import { startPinProxy, type PinProxy } from "./pin-proxy.ts";
 
 export function agentDir(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
@@ -33,6 +33,7 @@ type LaunchOptions = {
 	mode: DisplayMode;
 	persistent: boolean;
 	importedProfile?: ChromiumCookieImport;
+	profileDirectory?: string;
 	grants: () => ReadonlySet<string>;
 	agentDirectory: string;
 	diagnostics: NetworkDiagnostics;
@@ -65,9 +66,9 @@ export async function launchRuntime(options: LaunchOptions): Promise<RuntimeReso
 			ignoreDefaultArgs: options.importedProfile ? IMPORT_IGNORE_ARGS : undefined,
 			proxy, env, timeout: DEFAULT_TIMEOUT_MS,
 		};
-		const contextOptions = { viewport: DEFAULT_VIEWPORT, acceptDownloads: false, serviceWorkers: "block" as const, ignoreHTTPSErrors: false, proxy };
+		const contextOptions = { viewport: null, acceptDownloads: false, serviceWorkers: "block" as const, ignoreHTTPSErrors: false, proxy };
 		if (options.persistent) {
-			const profile = options.importedProfile?.userDataDir ?? ensurePrivateDir(join(options.agentDirectory, PROFILE_DIR_NAME));
+			const profile = options.importedProfile?.userDataDir ?? options.profileDirectory ?? ensurePrivateDir(join(options.agentDirectory, PROFILE_DIR_NAME));
 			resources.context = await chromium.launchPersistentContext(profile, { ...launchOptions, ...contextOptions });
 			resources.browser = resources.context.browser() ?? undefined;
 		} else {
@@ -91,7 +92,8 @@ export async function closeRuntime(resources: RuntimeResources): Promise<void> {
 }
 
 const MARKER = "pi-browser";
-type RunState = { marker: string; ownerPid: number; xvfbPid?: number; browserPid?: number; display?: string; userDataDir?: string };
+type RunState = { marker: string; ownerPid: number; xvfbPid?: number; xvfbStartTime?: string;
+	browserPid?: number; browserStartTime?: string; display?: string; userDataDir?: string };
 
 export class RuntimeState {
 	readonly directory: string;
@@ -102,7 +104,10 @@ export class RuntimeState {
 	}
 	write(resources: RuntimeResources, userDataDir?: string): void {
 		ensurePrivateDir(join(this.directory, RUN_DIR_NAME));
-		const state: RunState = { marker: MARKER, ownerPid: process.pid, xvfbPid: resources.xvfb?.pid, display: resources.xvfb?.display, userDataDir };
+		const browser = userDataDir ? browserIdentity(userDataDir) : undefined;
+		const state: RunState = { marker: MARKER, ownerPid: process.pid,
+			xvfbPid: resources.xvfb?.pid, xvfbStartTime: resources.xvfb ? processStartTime(resources.xvfb.pid) : undefined,
+			browserPid: browser?.pid, browserStartTime: browser?.startTime, display: resources.xvfb?.display, userDataDir };
 		writeFileSync(this.path, JSON.stringify(state), { mode: 0o600 });
 	}
 	remove(): void { try { unlinkSync(this.path); } catch { /* absent */ } }
@@ -127,24 +132,61 @@ function pidAlive(pid: number): boolean {
 }
 
 async function reapState(state: RunState): Promise<void> {
-	if (state.xvfbPid) {
-		const cmd = cmdlineOf(state.xvfbPid) ?? "";
-		if (cmd.includes("Xvfb") && (!state.display || cmd.includes(state.display.replace(":", "")) || cmd.includes("-displayfd"))) await killPid(state.xvfbPid, SHUTDOWN_GRACE_MS);
+	// Old records without start times cannot prove ownership: leave their processes alone.
+	if (state.xvfbPid && state.xvfbStartTime) {
+		const pid = state.xvfbPid;
+		await killPid(pid, SHUTDOWN_GRACE_MS, () => sameProcess(pid, state.xvfbStartTime) &&
+			basename(commandLine(pid)[0] ?? "") === "Xvfb");
 	}
-	if (state.browserPid) {
-		const cmd = cmdlineOf(state.browserPid) ?? "";
-		if ((cmd.includes("chrom") || cmd.includes("msedge")) && (!state.userDataDir || cmd.includes(state.userDataDir))) await killPid(state.browserPid, SHUTDOWN_GRACE_MS);
-	}
-	if (state.userDataDir) {
-		for (const pid of pidsWithCmdline(state.userDataDir)) {
-			const cmd = cmdlineOf(pid) ?? "";
-			if (cmd.includes("chrom") || cmd.includes("msedge")) await killPid(pid, SHUTDOWN_GRACE_MS);
-		}
+	if (state.browserPid && state.browserStartTime && state.userDataDir) {
+		const pid = state.browserPid;
+		await killPid(pid, SHUTDOWN_GRACE_MS, () => sameProcess(pid, state.browserStartTime) &&
+			profileOwnsBrowser(state.userDataDir!, pid));
 	}
 }
 
-function pidsWithCmdline(needle: string): number[] {
+function commandLine(pid: number): string[] {
+	try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean); }
+	catch { return []; }
+}
+
+function processStartTime(pid: number): string | undefined {
 	try {
-		return readdirSync("/proc").filter((name) => /^\d+$/.test(name)).map(Number).filter((pid) => (cmdlineOf(pid) ?? "").includes(needle));
-	} catch { return []; }
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		// comm can contain spaces and parentheses; fields after its final ')' begin at field 3.
+		const value = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+		return value && /^\d+$/.test(value) ? value : undefined;
+	} catch { return undefined; }
+}
+
+function sameProcess(pid: number, startTime?: string): boolean {
+	return Number.isSafeInteger(pid) && pid > 0 && typeof startTime === "string" &&
+		/^\d+$/.test(startTime) && processStartTime(pid) === startTime;
+}
+
+function profileBrowserPid(directory: string): number | undefined {
+	try {
+		const lock = readlinkSync(join(directory, "SingletonLock"));
+		const prefix = `${hostname()}-`;
+		const suffix = lock.startsWith(prefix) ? lock.slice(prefix.length) : "";
+		const pid = Number(suffix);
+		return /^\d+$/.test(suffix) && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+	} catch { return undefined; }
+}
+
+function profileOwnsBrowser(directory: string, pid: number): boolean {
+	try {
+		// Chromium flattens /proc/cmdline into its process title; splitting it cannot
+		// safely recover argv (especially paths with spaces). Its exact profile lock
+		// identifies the main process without path substring matching or /proc scans.
+		return profileBrowserPid(directory) === pid &&
+			/^(?:chromium|chrome|google-chrome|msedge)(?:-.*)?$/.test(basename(readlinkSync(`/proc/${pid}/exe`)));
+	} catch { return false; }
+}
+
+function browserIdentity(directory: string): { pid: number; startTime: string } | undefined {
+	const pid = profileBrowserPid(directory);
+	if (!pid) return undefined;
+	const startTime = processStartTime(pid);
+	return startTime && profileOwnsBrowser(directory, pid) && sameProcess(pid, startTime) ? { pid, startTime } : undefined;
 }

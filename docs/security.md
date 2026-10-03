@@ -4,13 +4,13 @@
 
 Run checkout-relative shell commands from the repository root. These guides track repository source; released packages may lag.
 
-Driver is **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/Patchright)** (Playwright fork): no `Runtime.enable` leak, no `--enable-automation`, `navigator.webdriver` patched. Default display is **headed Xvfb** on Linux. Prefers installed Google Chrome over bundled Chromium.
+Driver is **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/Patchright)** (Playwright fork): no `Runtime.enable` leak, no `--enable-automation`, `navigator.webdriver` patched. Default display is **headed Xvfb** on Linux, with native window sizing (`viewport: null`) and no custom user-agent/headers. Prefers installed Google Chrome over bundled Chromium.
 
 This is anti-automation hardening, not a captcha solver and not a residential-IP cloak. Datacenter IPs and Turnstile still lose. Prefer [`pi-web-access`](https://github.com/kvidzibo/pi-web-access) `fetch_content` for static public HTML.
 
 > **Security:** Pi packages run with your full system permissions. After `/browser login` or an approved cookie request, the agent can act as that site-user on granted origins. Page text is untrusted (prompt injection). Localhost, private IPs and `file:` are blocked. Your real Chrome/Chromium profile is never driven; the optional human-confirmed Chromium import uses a separate cookie snapshot. Text tool results redact cookie values of 6+ characters and sensitive URL query keys; this is not a complete secret scanner. Install only from a source you trust.
 
-**Design trade-off:** ephemeral anonymous profiles and per-session login grants keep agent browsing separate from everyday profiles. Signed-in tasks need approval; ungranted document destinations are blocked. These controls are not a complete sandbox. See [grant handling](../grants.ts), [grant tests](../tests/grants.test.ts), and the [login guide](usage.md#cookies--login).
+**Design trade-off:** ephemeral anonymous profiles and per-session login grants keep agent browsing separate from everyday profiles. `/pi-browser` optionally creates named private profiles with retained cookies/site storage, but each activation requires exact-origin approval. Close preserves approval; logout/reload/shutdown revoke approval and selection without deleting the saved data. The model cannot select a profile, and approvals are never saved to disk. Signed-in tasks need approval; ungranted document destinations are blocked. These controls are not a complete sandbox. See [grant handling](../grants.ts), [grant tests](../tests/grants.test.ts), and the [login guide](usage.md#cookies--login).
 
 ## Network gate
 

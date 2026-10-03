@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
@@ -72,8 +74,10 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.equal(denied.details.status, "denied");
 	const cancelled = await tool.execute("fixture", request, AbortSignal.abort(), undefined, { hasUI: true, mode: "tui" });
 	assert.equal(cancelled.details.status, "cancelled");
-	assert.deepEqual([...result.extensions[0].commands.keys()], ["browser"]);
+	assert.deepEqual([...result.extensions[0].commands.keys()], ["browser", "pi-browser"]);
 	const command = result.extensions[0].commands.get("browser");
+	const profileCommand = result.extensions[0].commands.get("pi-browser");
+	assert.ok(profileCommand.getArgumentCompletions("profiles").some((item: any) => item.value === "profiles"));
 	assert.ok(command.getArgumentCompletions("login").some((item: any) => item.value === "login --from-chromium"));
 	assert.ok(command.getArgumentCompletions("doctor").some((item: any) => item.value === "doctor"));
 	const messages: string[] = [];
@@ -81,8 +85,57 @@ test("package manifest factory-loads browser tool without launching", async () =
 	await command.handler("login --from-chromium", ctx);
 	assert.deepEqual(messages, ["login needs interactive UI"]);
 	messages.length = 0;
+	await profileCommand.handler("", ctx);
+	assert.deepEqual(messages, ["profiles need interactive UI"]);
+	messages.length = 0;
 	await command.handler("login --from-chromium extra", { ...ctx, hasUI: true, mode: "tui" });
 	assert.deepEqual(messages, ["Usage: /browser login [--from-chromium]"]);
+});
+
+test("profile command creates saved storage but activates only after fresh exact-origin approval", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-browser-profile-command-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = directory;
+	try {
+		const loaded = await loadWithPi([join(REPO, "index.ts")]);
+		assert.deepEqual(loaded.errors, []);
+		const command = loaded.extensions[0].commands.get("pi-browser");
+		const notices: string[] = [], inputs = ["applications", "https://93.184.216.34"];
+		const confirmations = [true, false];
+		let choice = "Create profile";
+		const ctx = { hasUI: true, mode: "rpc", ui: {
+			select: async (_title: string, choices: string[]) => { assert.equal(choices[0], "Keep current browser"); assert.ok(choices.includes(choice)); return choice; },
+			input: async () => inputs.shift(),
+			confirm: async (_title: string, body: string) => { assert.match(body, /disk/); return confirmations.shift() ?? false; },
+			notify: (message: string) => notices.push(message),
+		} };
+		await command.handler("", ctx);
+		assert.deepEqual(await readdir(join(directory, "browser-profiles")), ["applications"]);
+		await command.handler("status", ctx);
+		assert.match(notices.at(-1)!, /profile=\(none\).*grants=\(none\)/);
+		choice = "Profile: applications";
+		inputs.push("http://127.0.0.1");
+		await command.handler("", ctx);
+		assert.match(notices.at(-1)!, /Blocked/);
+		inputs.push("https://93.184.216.34"); confirmations.push(true);
+		await command.handler("", ctx);
+		await command.handler("status", ctx);
+		assert.match(notices.at(-1)!, /profile=applications.*grants=https:\/\/93\.184\.216\.34/);
+		await command.handler("close", ctx);
+		await command.handler("status", ctx);
+		assert.match(notices.at(-1)!, /profile=applications/);
+		await command.handler("logout", ctx);
+		await command.handler("status", ctx);
+		assert.match(notices.at(-1)!, /profile=\(none\).*grants=\(none\)/);
+		assert.deepEqual(await readdir(join(directory, "browser-profiles")), ["applications"]);
+		inputs.push("https://93.184.216.34"); confirmations.push(false);
+		await command.handler("", ctx);
+		await command.handler("status", ctx);
+		assert.match(notices.at(-1)!, /profile=\(none\)/, "saved profiles do not restore approval");
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("optional images use Pi's image result contract and text remains bounded", async () => {
