@@ -90,9 +90,11 @@ site actions cannot be undone. Queued cancellations do not start browser work.
 Run `/pi-browser` (or `/browser profiles`) to create or select a named profile.
 Creation explicitly asks permission to retain cookies, logins and site storage on disk.
 Names use 1–40 ASCII letters, digits, hyphens or underscores, starting with a letter
-or digit. Selecting a profile asks for exact public HTTP(S) origins and approval
-for this session. Cancelling selection leaves the current browser unchanged; a newly
-created profile remains saved even if its activation is cancelled.
+or digit. **Selecting a saved profile authorizes the agent on all public websites
+for this session**, including saved logins and normal cookie-bearing subresources.
+There is no origin-entry or activation-confirmation prompt; the picker discloses the
+all-public-site scope. Creating a profile confirms persistence and this scope, then
+selects it. Cancelling the picker leaves the current browser unchanged.
 
 Profiles live at `~/.pi/agent/browser-profiles/<name>/user-data`, or under
 `PI_CODING_AGENT_DIR`. Storage directories are private (0700); symlink profiles
@@ -101,21 +103,23 @@ its own profile singleton lock. Close all users before deleting a profile direct
 manually; the picker does not delete saved data.
 
 `/pi-browser close` retains selection and session approval. `/pi-browser logout`,
-reload and shutdown clear both, but retain saved cookies/storage. No profile or
-origin approval is selected automatically in a new session. Choose **Use anonymous
+reload and shutdown clear both, but retain saved cookies/storage. No saved profile
+is selected automatically in a new session. Choose **Use anonymous
 browser** to revoke access and return to ephemeral browsing.
 
 After selecting a profile, `/pi-browser login` opens that same profile on your
-screen for manual login or verification, then asks for session origins again.
+screen for manual login or verification, without asking for origins. Finishing login
+resets tabs to about:blank before returning control to the agent.
 It never opens your everyday profile. Chromium uses native window sizing, not a
-forced 1920×1080 viewport. Security restrictions remain unchanged; persistence and
+forced 1920×1080 viewport. Localhost/private networks, unsupported schemes and
+other non-origin safety restrictions remain blocked; persistence and
 native sizing do not guarantee a higher CAPTCHA score.
 
 ## Cookies / login
 
 Default profile is **ephemeral**. There is no automatic access to your everyday browser. Cookie import requires explicit approval, either through a model's `request_cookies` request or `/browser login --from-chromium`; Firefox is not supported.
 
-`/browser login` opens the selected named profile, or the legacy isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
+`/browser login` opens the selected named profile, or the legacy isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Named profiles keep their all-public-site access. Legacy login still asks for exact origins for **this session**; document navigations must match those origins and other public hosts load as cookieless subresources (scripts, images, CDNs). Reload, logout, and shutdown wipe access/selection, not saved site cookies. Cookie imports below always retain exact-origin approval.
 
 Do not type passwords into the `browser` tool. Cancelled or failed login—including browser launch failure—closes the attempted login and clears its grants/persistent-profile selection. Snapshot revisions are not reused after close/reopen, and tool failures reject with redacted messages so Pi marks them as errors.
 

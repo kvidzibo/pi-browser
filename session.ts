@@ -70,14 +70,13 @@ export class BrowserSession {
 	listProfiles(): Promise<string[]> { return this.profiles.list(); }
 	createProfile(name: string): Promise<string> { return this.profiles.create(name); }
 
-	/** Command-only, after explicit approval of persistence and exact session origins. */
-	async selectProfile(name: string, origins: string[]): Promise<void> {
-		if (!origins.length) throw new Error("Select at least one origin for this session.");
+	/** User selection authorizes this saved profile on all public sites for this session. */
+	async selectProfile(name: string): Promise<void> {
 		await this.profiles.userDataDir(name);
 		await this.closeBrowser();
 		await this.clearGrants();
 		this.namedProfile = name;
-		await this.applyGrants(origins);
+		this.forcePersistent = true; // Empty origin grants mean native public-site network access.
 	}
 
 	setMode(mode: DisplayMode): void {
@@ -124,7 +123,7 @@ export class BrowserSession {
 
 	// Only UI-approved callers may enter here. Never returns raw cookies.
 	async importChromiumCookies(origins: string[], options: { cookieNames?: string[]; signal?: AbortSignal } = {}): Promise<number> {
-		if (this.context || this.grants.size || this.importedProfile || this.importCleanup.size) throw new Error("Close the browser and clear grants before importing");
+		if (this.context || this.namedProfile || this.grants.size || this.importedProfile || this.importCleanup.size) throw new Error("Close the browser and clear grants before importing");
 		origins = [...origins];
 		const cookieNames = options.cookieNames ? [...options.cookieNames] : undefined;
 		const checkCancelled = () => { if (options.signal?.aborted) throw new Error("Cookie import cancelled"); };
@@ -156,9 +155,14 @@ export class BrowserSession {
 	}
 
 	async applyGrants(origins: string[]): Promise<void> {
+		if (this.namedProfile) throw new Error("Saved profiles use all public sites; origin grants are only for scoped login or cookie imports.");
 		this.grants = new Set(origins);
 		this.forcePersistent = true;
 		this.proxy?.dropTunnels();
+		await this.resetTabs();
+	}
+
+	async resetTabs(): Promise<void> {
 		if (!this.context) return;
 		// The user may have closed the login tab, or its origin may now be denied.
 		// Create a fresh blank keeper before closing old tabs instead of reusing one.
@@ -175,7 +179,7 @@ export class BrowserSession {
 	statusText(): string {
 		const mode = resolveMode(this.mode);
 		const url = this.activePage()?.url();
-		const grants = this.grants.size ? this.grantList().join(" ") : "(none)";
+		const grants = this.namedProfile ? "(all public websites)" : this.grants.size ? this.grantList().join(" ") : "(none)";
 		const running = this.context ? "up" : "down";
 		const urlText = url ? sanitizeWithSecrets(redactUrl(url), [...this.cookieSecrets]) : "-";
 		return `browser ${running} mode=${mode} persistent=${this.persistent} source=${this.importedProfile ? "chromium-copy" : "isolated"} profile=${this.namedProfile ?? "(none)"} viewport=native url=${urlText} grants=${grants}`;
@@ -360,7 +364,7 @@ export class BrowserSession {
 		if (url.protocol !== "http:" && url.protocol !== "https:" && url.href !== "about:blank") {
 			throw new Error(`Navigate blocked for scheme ${url.protocol.replace(":", "")}`);
 		}
-		if (this.persistent && url.href !== "about:blank") {
+		if (this.persistent && !this.namedProfile && url.href !== "about:blank") {
 			if (this.grants.size === 0) {
 				throw new Error("Login profile has no origin grants yet. Finish /browser login or /browser logout.");
 			}
@@ -378,6 +382,10 @@ export class BrowserSession {
 	private pageOriginOk(raw: string): boolean {
 		if (!raw || isAboutBlank(raw)) return true;
 		if (!this.persistent) return true;
+		if (this.namedProfile) {
+			try { const url = new URL(raw); return url.protocol === "http:" || url.protocol === "https:"; }
+			catch { return false; }
+		}
 		if (this.grants.size === 0) return false;
 		try {
 			return originAllowed(raw, this.grants);
