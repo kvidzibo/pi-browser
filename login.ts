@@ -10,7 +10,7 @@ export async function loginWithUI(session: LoginSession, ctx: ExtensionContext):
 	const name = session.profileName();
 	const cancel = () => ctx.ui.notify("Login cancelled", "info");
 	if (!await ctx.ui.confirm("Isolated browser login",
-		`Open Chromium on your screen with ${name ? `saved profile ${name}` : "an isolated profile"} (not your real Chrome). Log in yourself. Saved site data remains on disk; access requires fresh origins for this session only.`)) {
+		`Open Chromium on your screen with ${name ? `saved profile ${name}` : "an isolated profile"} (not your real Chrome). Log in yourself. Saved site data remains on disk; ${name ? "the selected profile allows the agent to act as you on all public websites for this session" : "access requires fresh origins for this session only"}.`)) {
 		cancel(); return;
 	}
 	let committed = false;
@@ -21,8 +21,13 @@ export async function loginWithUI(session: LoginSession, ctx: ExtensionContext):
 		session.armPersistentProfile(name);
 		await session.ensureLaunched();
 		if (!await ctx.ui.confirm("Logged in?",
-			"Use the Chromium window to log in. Confirm when finished. The agent still cannot use the profile until you grant origins.")) {
+			`Use the Chromium window to log in. Confirm when finished. ${name ? "The agent will be able to use this saved profile on all public websites." : "The agent still cannot use the profile until you grant origins."}`)) {
 			cancel(); return;
+		}
+		if (name) {
+			committed = true;
+			ctx.ui.notify(`Profile ${name} ready: all public websites allowed.`, "info");
+			return;
 		}
 		const input = await ctx.ui.input("Origins to grant this session (comma-separated hosts)", "https://example.com");
 		if (!input) { cancel(); return; }

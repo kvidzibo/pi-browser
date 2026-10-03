@@ -90,12 +90,12 @@ test("closing the active tab invalidates its refs before another tab can receive
 	});
 });
 
-test("named profiles keep site data separately but never restore session grants", integration, async () => {
+test("named profiles allow all public sites, isolate saved data and revoke selection on shutdown", integration, async () => {
 	await fixture(async (session) => {
 		const driver = session as unknown as { context: BrowserContext; requirePage(): Page };
 		const origin = "https://93.184.216.34";
 		const open = async (name: string) => {
-			await session.selectProfile(name, [origin]);
+			await session.selectProfile(name);
 			await session.ensureLaunched();
 			await driver.context.route("**/*", (route) => route.fulfill({ contentType: "text/html", body: "<p>Saved profile fixture</p>" }));
 			await session.execute({ action: "navigate", url: origin });
@@ -110,7 +110,12 @@ test("named profiles keep site data separately but never restore session grants"
 		assert.match(state.browserStartTime, /^\d+$/);
 		await driver.context.addCookies([{ name: "saved", value: "saved-fixture-secret", url: origin, expires: Date.now() / 1000 + 86400 }]);
 		await driver.requirePage().evaluate(() => localStorage.setItem("saved", "profile-storage-fixture"));
-		await assert.rejects(session.execute({ action: "navigate", url: "https://93.184.216.35" }), /not granted/);
+		await session.execute({ action: "navigate", url: "https://93.184.216.35" });
+		assert.equal(driver.requirePage().url(), "https://93.184.216.35/");
+		assert.match((await session.execute({ action: "snapshot" })).content, /Saved profile fixture/);
+		await assert.rejects(session.execute({ action: "navigate", url: "http://127.0.0.1" }), /Blocked/);
+		await assert.rejects(session.applyGrants([origin]), /all public sites/);
+		await assert.rejects(session.importChromiumCookies([origin]), /clear grants/);
 		await open("other");
 		assert.deepEqual(await driver.context.cookies(), []);
 		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), null);

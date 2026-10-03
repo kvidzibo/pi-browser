@@ -92,7 +92,7 @@ test("package manifest factory-loads browser tool without launching", async () =
 	assert.deepEqual(messages, ["Usage: /browser login [--from-chromium]"]);
 });
 
-test("profile command creates saved storage but activates only after fresh exact-origin approval", async () => {
+test("profile command selects all public sites without origin or activation prompts", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-browser-profile-command-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = directory;
@@ -100,27 +100,23 @@ test("profile command creates saved storage but activates only after fresh exact
 		const loaded = await loadWithPi([join(REPO, "index.ts")]);
 		assert.deepEqual(loaded.errors, []);
 		const command = loaded.extensions[0].commands.get("pi-browser");
-		const notices: string[] = [], inputs = ["applications", "https://93.184.216.34"];
-		const confirmations = [true, false];
+		const notices: string[] = [];
+		let inputs = 0, confirmations = 0;
 		let choice = "Create profile";
 		const ctx = { hasUI: true, mode: "rpc", ui: {
-			select: async (_title: string, choices: string[]) => { assert.equal(choices[0], "Keep current browser"); assert.ok(choices.includes(choice)); return choice; },
-			input: async () => inputs.shift(),
-			confirm: async (_title: string, body: string) => { assert.match(body, /disk/); return confirmations.shift() ?? false; },
+			select: async (title: string, choices: string[]) => { assert.match(title, /all public sites/); assert.equal(choices[0], "Keep current browser"); assert.ok(choices.includes(choice)); return choice; },
+			input: async () => { inputs++; return "applications"; },
+			confirm: async (_title: string, body: string) => { confirmations++; assert.match(body, /disk/); assert.match(body, /all public websites/); return true; },
 			notify: (message: string) => notices.push(message),
 		} };
 		await command.handler("", ctx);
 		assert.deepEqual(await readdir(join(directory, "browser-profiles")), ["applications"]);
 		await command.handler("status", ctx);
-		assert.match(notices.at(-1)!, /profile=\(none\).*grants=\(none\)/);
-		choice = "Profile: applications";
-		inputs.push("http://127.0.0.1");
-		await command.handler("", ctx);
-		assert.match(notices.at(-1)!, /Blocked/);
-		inputs.push("https://93.184.216.34"); confirmations.push(true);
-		await command.handler("", ctx);
-		await command.handler("status", ctx);
-		assert.match(notices.at(-1)!, /profile=applications.*grants=https:\/\/93\.184\.216\.34/);
+		assert.match(notices.at(-1)!, /profile=applications.*grants=\(all public websites\)/);
+		assert.equal(inputs, 1, "only the profile name is requested");
+		assert.equal(confirmations, 1, "only persistence creation is confirmed");
+		await command.handler("grants", ctx);
+		assert.match(notices.at(-1)!, /all public websites/);
 		await command.handler("close", ctx);
 		await command.handler("status", ctx);
 		assert.match(notices.at(-1)!, /profile=applications/);
@@ -128,10 +124,12 @@ test("profile command creates saved storage but activates only after fresh exact
 		await command.handler("status", ctx);
 		assert.match(notices.at(-1)!, /profile=\(none\).*grants=\(none\)/);
 		assert.deepEqual(await readdir(join(directory, "browser-profiles")), ["applications"]);
-		inputs.push("https://93.184.216.34"); confirmations.push(false);
+		choice = "Profile: applications";
 		await command.handler("", ctx);
 		await command.handler("status", ctx);
-		assert.match(notices.at(-1)!, /profile=\(none\)/, "saved profiles do not restore approval");
+		assert.match(notices.at(-1)!, /profile=applications.*grants=\(all public websites\)/);
+		assert.equal(inputs, 1, "selection must not prompt for origins");
+		assert.equal(confirmations, 1, "selection itself authorizes the public-site scope");
 	} finally {
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
 		await rm(directory, { recursive: true, force: true });

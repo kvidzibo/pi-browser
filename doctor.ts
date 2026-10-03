@@ -25,9 +25,9 @@ export async function browserDoctor(options: {
 		lines.push(`Browser: executable (${binary.source}) ${binary.executablePath}`);
 	} catch { lines.push("Browser: unavailable or not executable. Install Chromium/Chrome or check PI_BROWSER_EXECUTABLE."); }
 	lines.push(`Agent directory: ${options.directory ?? agentDir()}`,
-		`Selected profile: ${options.profile ?? "(none; anonymous or temporary login)"} (approval is session-only)`,
+		`Selected profile: ${options.profile ?? "(none; anonymous or temporary login)"}${options.profile ? " (all public websites; user-selected this session)" : ""}`,
 		"Window sizing: native; no custom user-agent or browser headers",
-		"Compatibility limits: service workers blocked; routed resources disable HTTP cache; ungranted resources use cookieless Node transport; persistent profiles use HTTP/1.1",
+		"Compatibility limits: service workers blocked; routed resources disable HTTP cache; scoped login/imports use cookieless Node transport for ungranted resources; persistent profiles use HTTP/1.1",
 		`Network failures (current/last action): ${options.network ?? "none recorded"}`,
 		"No browser was launched; cookies and the desktop keyring were not inspected.");
 	return lines.join("\n");

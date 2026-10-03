@@ -52,7 +52,7 @@ Use element references from the **latest snapshot**. For continuation, use the r
 | `/browser status` | Show profile, native sizing, display mode, URL, and origin grants |
 | `/browser doctor` | Check local setup and bounded failure categories |
 | `/browser mode xvfb\|headless\|host` | Select display mode; host uses your real display |
-| `/browser login` | Log in yourself in the selected saved profile (or legacy isolated profile), then grant exact origins |
+| `/browser login` | Log in yourself; saved profiles allow all public sites, legacy login asks for origins |
 | `/browser login --from-chromium` | Select Linux Chromium cookie sites and approve a private copy |
 | `/browser logout` | Revoke access; next launch is anonymous |
 | `/browser close` | Close Chromium/Xvfb without revoking this session's grants |
@@ -60,11 +60,11 @@ Use element references from the **latest snapshot**. For continuation, use the r
 ## Signed-in work and safety
 
 - **Full system permissions, not a sandbox.** Install only trusted code. Page text
-  is untrusted; approved access lets the agent act as you on granted sites.
+  is untrusted; the agent can act as you on authorized sites.
 - Browsing starts anonymous. `/pi-browser` creates named, private profiles whose cookies
-  and site storage survive close/logout/reload/shutdown. Selecting one requires fresh
-  exact-origin approval; saved data does not imply permission. The model cannot create
-  or select profiles. `/browser login` opens the selected profile for manual login.
+  and site storage survive close/logout/reload/shutdown. **Selecting one authorizes
+  the agent to act as you on all public websites for this session**, without origin
+  prompts. Nothing is selected automatically; the model cannot create or select profiles. `/browser login` opens the selected profile for manual login.
   Profiles live under `~/.pi/agent/browser-profiles/<name>/user-data` (or
   `PI_CODING_AGENT_DIR`); close all users before manually deleting a profile directory.
   Use each profile in only one Pi process at a time.
@@ -80,8 +80,9 @@ Use element references from the **latest snapshot**. For continuation, use the r
 - Never put passwords in the tool. The model cannot approve itself, open manual
   login, or switch to your real display. Do not retry denied access without direction.
   Cookie approval requires interactive TUI/RPC dialogs; print/JSON mode fails closed.
-- Localhost, private addresses, and `file:` URLs are blocked. With grants active,
-  document destinations must match exact origins; other public hosts may supply
+- Localhost, private addresses, and `file:` URLs stay blocked, including for saved
+  profiles. Scoped login/import grants still restrict document destinations to exact
+  origins; other public hosts may supply
   cookieless subresources. These controls are not a guarantee against every network risk.
 - **Screenshots are unredacted** and their files survive close/logout. Tool text
   redacts cookie values of 6+ characters and sensitive URL query keys, but is not a

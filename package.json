@@ -1,6 +1,6 @@
 {
   "name": "@kvidzibo/pi-browser",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pi package: Patchright Chromium, headed Xvfb, isolated login profile, hard LAN block",
   "author": "Tomas Rackauskas",
   "keywords": [
