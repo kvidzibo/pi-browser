@@ -6,7 +6,7 @@ import type { Browser, BrowserContext } from "patchright-core";
 import { findBrowser } from "./browser-bin.ts";
 import { checkCancelled } from "./cancellation.ts";
 import { IMPORT_BROWSER_ARGS, IMPORT_IGNORE_ARGS, type ChromiumCookieImport } from "./chromium-import.ts";
-import { browserNetworkArgs, DEFAULT_TIMEOUT_MS, DEFAULT_VIEWPORT, PROFILE_DIR_NAME, RUN_DIR_NAME, SHUTDOWN_GRACE_MS, type DisplayMode } from "./constants.ts";
+import { browserNetworkArgs, DEFAULT_TIMEOUT_MS, PROFILE_DIR_NAME, RUN_DIR_NAME, SHUTDOWN_GRACE_MS, type DisplayMode } from "./constants.ts";
 import type { NetworkDiagnostics } from "./diagnostics.ts";
 import { cmdlineOf, killPid, startXvfb, stopXvfb, type XvfbHandle } from "./display.ts";
 import { startPinProxy, type PinProxy } from "./pin-proxy.ts";
@@ -33,6 +33,7 @@ type LaunchOptions = {
 	mode: DisplayMode;
 	persistent: boolean;
 	importedProfile?: ChromiumCookieImport;
+	profileDirectory?: string;
 	grants: () => ReadonlySet<string>;
 	agentDirectory: string;
 	diagnostics: NetworkDiagnostics;
@@ -65,9 +66,9 @@ export async function launchRuntime(options: LaunchOptions): Promise<RuntimeReso
 			ignoreDefaultArgs: options.importedProfile ? IMPORT_IGNORE_ARGS : undefined,
 			proxy, env, timeout: DEFAULT_TIMEOUT_MS,
 		};
-		const contextOptions = { viewport: DEFAULT_VIEWPORT, acceptDownloads: false, serviceWorkers: "block" as const, ignoreHTTPSErrors: false, proxy };
+		const contextOptions = { viewport: null, acceptDownloads: false, serviceWorkers: "block" as const, ignoreHTTPSErrors: false, proxy };
 		if (options.persistent) {
-			const profile = options.importedProfile?.userDataDir ?? ensurePrivateDir(join(options.agentDirectory, PROFILE_DIR_NAME));
+			const profile = options.importedProfile?.userDataDir ?? options.profileDirectory ?? ensurePrivateDir(join(options.agentDirectory, PROFILE_DIR_NAME));
 			resources.context = await chromium.launchPersistentContext(profile, { ...launchOptions, ...contextOptions });
 			resources.browser = resources.context.browser() ?? undefined;
 		} else {

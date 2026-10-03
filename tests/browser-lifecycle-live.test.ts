@@ -88,3 +88,40 @@ test("closing the active tab invalidates its refs before another tab can receive
 		assert.equal(await first.getAttribute("html", "data-clicked"), null);
 	});
 });
+
+test("named profiles keep site data separately but never restore session grants", integration, async () => {
+	await fixture(async (session) => {
+		const driver = session as unknown as { context: BrowserContext; requirePage(): Page };
+		const origin = "https://93.184.216.34";
+		const open = async (name: string) => {
+			await session.selectProfile(name, [origin]);
+			await session.ensureLaunched();
+			await driver.context.route("**/*", (route) => route.fulfill({ contentType: "text/html", body: "<p>Saved profile fixture</p>" }));
+			await session.execute({ action: "navigate", url: origin });
+			assert.equal(driver.requirePage().viewportSize(), null, "window sizing must not emulate a fixed viewport");
+		};
+		await session.createProfile("applications");
+		await session.createProfile("other");
+		await open("applications");
+		await driver.context.addCookies([{ name: "saved", value: "saved-fixture-secret", url: origin, expires: Date.now() / 1000 + 86400 }]);
+		await driver.requirePage().evaluate(() => localStorage.setItem("saved", "profile-storage-fixture"));
+		await assert.rejects(session.execute({ action: "navigate", url: "https://93.184.216.35" }), /not granted/);
+		await open("other");
+		assert.deepEqual(await driver.context.cookies(), []);
+		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), null);
+		await open("applications");
+		assert.equal((await driver.context.cookies()).find((cookie) => cookie.name === "saved")?.value, "saved-fixture-secret");
+		assert.equal(await driver.requirePage().evaluate(() => localStorage.getItem("saved")), "profile-storage-fixture");
+		await session.closeBrowser();
+		assert.equal(session.profileName(), "applications", "close retains approval and selection");
+		await session.ensureLaunched();
+		assert.equal((await driver.context.cookies()).find((cookie) => cookie.name === "saved")?.value, "saved-fixture-secret");
+		await session.shutdown();
+		assert.equal(session.profileName(), undefined);
+		assert.deepEqual(session.grantList(), []);
+		assert.deepEqual(await session.listProfiles(), ["applications", "other"]);
+		session.setMode("host");
+		await session.ensureLaunched();
+		assert.deepEqual(await driver.context.cookies(), [], "anonymous launch cannot inherit saved cookies");
+	});
+});

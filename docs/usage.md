@@ -43,13 +43,15 @@ Default mode: **xvfb** on Linux if `Xvfb` exists, else **headless**. `host` is s
 ### Storage and troubleshooting
 
 `PI_CODING_AGENT_DIR` overrides the default `~/.pi/agent` directory for the isolated
-login profile, screenshots and run-state files. Chromium import source paths remain
+login profile, named profiles, screenshots and run-state files. Chromium import source paths remain
 controlled by Chromium's own configuration variables; this override does not change
 the source browser profile.
 
 Run `/browser doctor` to check Node compatibility, executable availability, Xvfb,
 mode and the selected agent directory. It does not launch a browser, contact sites,
-read cookie inventory or access the keyring. Network failures expose only fixed
+read cookie inventory or access the keyring. `/pi-browser doctor` is an alias and also
+reports the selected profile, native window sizing and network compatibility limits;
+it cannot explain a site\'s CAPTCHA score. Network failures expose only fixed
 categories and bounded counts (such as `dns`, `tls`, `origin_not_granted`,
 `private_address`, `redirect`, `resource_limit` and `timeout`), not URLs, headers,
 bodies or raw transport errors. Results and doctor show the current/last action's
@@ -83,11 +85,37 @@ are retained after close/logout; delete them yourself when no longer needed.
 Cancelled actions reject before further input is dispatched; already-dispatched
 site actions cannot be undone. Queued cancellations do not start browser work.
 
+## Saved isolated profiles
+
+Run `/pi-browser` (or `/browser profiles`) to create or select a named profile.
+Creation explicitly asks permission to retain cookies, logins and site storage on disk.
+Names use 1–40 ASCII letters, digits, hyphens or underscores, starting with a letter
+or digit. Selecting a profile asks for exact public HTTP(S) origins and approval
+for this session. Cancelling selection leaves the current browser unchanged; a newly
+created profile remains saved even if its activation is cancelled.
+
+Profiles live at `~/.pi/agent/browser-profiles/<name>/user-data`, or under
+`PI_CODING_AGENT_DIR`. Storage directories are private (0700); symlink profiles
+are rejected. Use a profile in only one Pi process at a time: Chromium enforces
+its own profile singleton lock. Close all users before deleting a profile directory
+manually; the picker does not delete saved data.
+
+`/pi-browser close` retains selection and session approval. `/pi-browser logout`,
+reload and shutdown clear both, but retain saved cookies/storage. No profile or
+origin approval is selected automatically in a new session. Choose **Use anonymous
+browser** to revoke access and return to ephemeral browsing.
+
+After selecting a profile, `/pi-browser login` opens that same profile on your
+screen for manual login or verification, then asks for session origins again.
+It never opens your everyday profile. Chromium uses native window sizing, not a
+forced 1920×1080 viewport. Security restrictions remain unchanged; persistence and
+native sizing do not guarantee a higher CAPTCHA score.
+
 ## Cookies / login
 
 Default profile is **ephemeral**. There is no automatic access to your everyday browser. Cookie import requires explicit approval, either through a model's `request_cookies` request or `/browser login --from-chromium`; Firefox is not supported.
 
-`/browser login` opens an isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
+`/browser login` opens the selected named profile, or the legacy isolated profile at `~/.pi/agent/browser-profile` (mode 0700) on your real display. You log in. Then you grant exact origins for **this session**. Reload, logout, and shutdown wipe grants. The profile dir can keep site cookies on disk; the agent still cannot navigate there without a fresh grant. Document navigations must match those origins. Other public hosts may still load as cookieless subresources (scripts, images, CDNs).
 
 Do not type passwords into the `browser` tool. Cancelled or failed login—including browser launch failure—closes the attempted login and clears its grants/persistent-profile selection. Snapshot revisions are not reused after close/reopen, and tool failures reject with redacted messages so Pi marks them as errors.
 

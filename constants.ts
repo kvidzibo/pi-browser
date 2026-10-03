@@ -10,7 +10,6 @@ export function browserNetworkArgs(persistent: boolean): string[] {
 	return ["--proxy-bypass-list=<-loopback>", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 		...(persistent ? ["--disable-http2"] : [])];
 }
-export const DEFAULT_VIEWPORT = { width: 1920, height: 1080 } as const;
 export const SHUTDOWN_GRACE_MS = 2_000;
 export const XVFB_SCREEN = "1920x1080x24";
 export const SENSITIVE_QUERY_KEYS =

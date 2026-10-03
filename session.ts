@@ -21,6 +21,7 @@ import { abortable, checkCancelled, Mutex } from "./cancellation.ts";
 import { TabRegistry } from "./tabs.ts";
 import { NetworkPolicy } from "./network-policy.ts";
 import { closeRuntime, ensurePrivateDir, launchRuntime, RuntimeState } from "./runtime.ts";
+import { ProfileStore } from "./profiles.ts";
 
 export type SessionResult = {
 	content: string;
@@ -41,6 +42,8 @@ export class BrowserSession {
 	private readonly snapshots = new SnapshotCache();
 	private readonly network = new NetworkPolicy();
 	private readonly runtime = new RuntimeState();
+	private readonly profiles = new ProfileStore(this.runtime.directory);
+	private namedProfile: string | undefined;
 	private get pages() { return this.tabs.pages; }
 	private get activeTab() { return this.tabs.active; }
 	private forcePersistent = false;
@@ -63,6 +66,19 @@ export class BrowserSession {
 
 	networkSummary(): string { return this.network.diagnostics.summary() || "none recorded"; }
 	displayMode(): DisplayMode { return resolveMode(this.mode); }
+	profileName(): string | undefined { return this.namedProfile; }
+	listProfiles(): Promise<string[]> { return this.profiles.list(); }
+	createProfile(name: string): Promise<string> { return this.profiles.create(name); }
+
+	/** Command-only, after explicit approval of persistence and exact session origins. */
+	async selectProfile(name: string, origins: string[]): Promise<void> {
+		if (!origins.length) throw new Error("Select at least one origin for this session.");
+		await this.profiles.userDataDir(name);
+		await this.closeBrowser();
+		await this.clearGrants();
+		this.namedProfile = name;
+		await this.applyGrants(origins);
+	}
 
 	setMode(mode: DisplayMode): void {
 		this.mode = mode;
@@ -86,10 +102,11 @@ export class BrowserSession {
 		if (profile) this.importCleanup.add(profile);
 		try {
 			// Keep restrictions until the authenticated context/proxy are closed.
-			if (profile) await this.teardown();
+			if (profile || this.persistent || this.namedProfile) await this.teardown();
 		} finally {
 			this.grants.clear();
 			this.forcePersistent = false;
+			this.namedProfile = undefined;
 			this.importedProfile = undefined;
 			await this.cleanupImports();
 		}
@@ -133,7 +150,8 @@ export class BrowserSession {
 		}
 	}
 
-	armPersistentProfile(): void {
+	armPersistentProfile(name?: string): void {
+		this.namedProfile = name;
 		this.forcePersistent = true;
 	}
 
@@ -160,7 +178,7 @@ export class BrowserSession {
 		const grants = this.grants.size ? this.grantList().join(" ") : "(none)";
 		const running = this.context ? "up" : "down";
 		const urlText = url ? sanitizeWithSecrets(redactUrl(url), [...this.cookieSecrets]) : "-";
-		return `browser ${running} mode=${mode} persistent=${this.persistent} source=${this.importedProfile ? "chromium-copy" : "isolated"} url=${urlText} grants=${grants}`;
+		return `browser ${running} mode=${mode} persistent=${this.persistent} source=${this.importedProfile ? "chromium-copy" : "isolated"} profile=${this.namedProfile ?? "(none)"} viewport=native url=${urlText} grants=${grants}`;
 	}
 
 	async reapStale(): Promise<void> { await this.runtime.reap(); }
@@ -494,8 +512,9 @@ export class BrowserSession {
 
 		try {
 			const wantPersistent = this.grants.size > 0 || this.forcePersistent;
+			const profileDirectory = this.namedProfile ? await this.profiles.userDataDir(this.namedProfile) : undefined;
 			const resources = await launchRuntime({ mode: resolveMode(this.mode), persistent: wantPersistent,
-				importedProfile: this.importedProfile, grants: () => this.grants, agentDirectory: this.runtime.directory,
+				profileDirectory, importedProfile: this.importedProfile, grants: () => this.grants, agentDirectory: this.runtime.directory,
 				diagnostics: this.network.diagnostics, signal });
 			this.context = resources.context;
 			this.browser = resources.browser;
@@ -537,7 +556,7 @@ export class BrowserSession {
 
 			checkCancelled(signal);
 			this.runtime.write({ context: this.context, browser: this.browser, proxy: this.proxy, xvfb: this.xvfb },
-				this.persistent ? this.importedProfile?.userDataDir ?? join(this.runtime.directory, PROFILE_DIR_NAME) : undefined);
+				this.persistent ? this.importedProfile?.userDataDir ?? profileDirectory ?? join(this.runtime.directory, PROFILE_DIR_NAME) : undefined);
 		} catch (err) {
 			await this.teardown();
 			throw err;

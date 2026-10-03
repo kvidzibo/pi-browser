@@ -5,9 +5,12 @@ import { loginFromChromiumWithUI, loginWithUI } from "../login.ts";
 for (const outcome of ["initial-cancel", "launch-failure", "finish-cancel", "input-cancel", "invalid-origin", "grant-cancel", "apply-failure", "success"]) {
 	test(`login transaction: ${outcome}`, async () => {
 		let armed = false, closes = 0, confirms = 0, granted: string[] = [];
+		const selectedName = outcome === "success" ? "applications" : undefined;
 		const session = {
 			setMode: () => {}, closeBrowser: async () => { closes++; return "closed"; },
-			clearGrants: async () => { armed = false; granted = []; }, armPersistentProfile: () => { armed = true; },
+			profileName: () => selectedName,
+			clearGrants: async () => { armed = false; granted = []; },
+			armPersistentProfile: (name?: string) => { assert.equal(name, selectedName); armed = true; },
 			ensureLaunched: async () => { if (outcome === "launch-failure") throw new Error("launch failed"); },
 			applyGrants: async (origins: string[]) => { if (outcome === "apply-failure") throw new Error("apply failed"); granted = origins; },
 		};

@@ -47,10 +47,12 @@ Use element references from the **latest snapshot**. For continuation, use the r
 
 | Command | Purpose |
 |---|---|
-| `/browser status` | Show display mode, URL, and origin grants |
+| `/pi-browser` | Create/select saved isolated profiles, or return to anonymous browsing |
+| `/browser profiles` | Open the same profile picker |
+| `/browser status` | Show profile, native sizing, display mode, URL, and origin grants |
 | `/browser doctor` | Check local setup and bounded failure categories |
 | `/browser mode xvfb\|headless\|host` | Select display mode; host uses your real display |
-| `/browser login` | Log in yourself in an isolated profile, then grant exact origins |
+| `/browser login` | Log in yourself in the selected saved profile (or legacy isolated profile), then grant exact origins |
 | `/browser login --from-chromium` | Select Linux Chromium cookie sites and approve a private copy |
 | `/browser logout` | Revoke access; next launch is anonymous |
 | `/browser close` | Close Chromium/Xvfb without revoking this session's grants |
@@ -59,7 +61,14 @@ Use element references from the **latest snapshot**. For continuation, use the r
 
 - **Full system permissions, not a sandbox.** Install only trusted code. Page text
   is untrusted; approved access lets the agent act as you on granted sites.
-- Profiles start anonymous. The model can request `browser` action `request_cookies`
+- Browsing starts anonymous. `/pi-browser` creates named, private profiles whose cookies
+  and site storage survive close/logout/reload/shutdown. Selecting one requires fresh
+  exact-origin approval; saved data does not imply permission. The model cannot create
+  or select profiles. `/browser login` opens the selected profile for manual login.
+  Profiles live under `~/.pi/agent/browser-profiles/<name>/user-data` (or
+  `PI_CODING_AGENT_DIR`); close all users before manually deleting a profile directory.
+  Use each profile in only one Pi process at a time.
+- The model can request `browser` action `request_cookies`
   for exact origins and optional cookie names; only you can approve. Linux Chromium's
   Default profile is supported, not Firefox. Your everyday profile is never driven.
 - Matching/subset cookie requests reuse the approved scope without prompting or
@@ -78,6 +87,10 @@ Use element references from the **latest snapshot**. For continuation, use the r
   redacts cookie values of 6+ characters and sensitive URL query keys, but is not a
   complete secret scanner. Delete retained screenshots when no longer needed.
   Cancellation cannot undo actions already dispatched to a site.
+
+Chromium uses native window sizing without user-agent spoofing. `/pi-browser doctor`
+reports compatibility limits, including cookieless third-party routing and blocked
+service workers. These changes do not guarantee CAPTCHA acceptance.
 
 ## Validation
 

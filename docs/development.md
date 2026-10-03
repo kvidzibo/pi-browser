@@ -46,7 +46,8 @@ pagination, image attachments and the agent-directory override.
 ### Architecture
 
 - `session.ts`: command/action orchestration and approved cookie-profile transactions.
-- `runtime.ts`: browser launch, partial-launch cleanup and private run-state files.
+- `runtime.ts`: browser launch, native sizing, partial-launch cleanup and private run-state files.
+- `profiles.ts` / `profile-ui.ts`: private named profile storage and user-only persistence/activation approval.
 - `tabs.ts`: tab/document identity and snapshot-reference lifetime, with typed page fixtures.
 - `network-policy.ts`: routed request policy; `pin-proxy.ts` and `cookieless.ts`: transports.
 - `snapshot.ts`: immutable, bounded snapshot pagination; `diagnostics.ts`: fixed failure categories.

@@ -4,12 +4,13 @@ import { parseGrantOrigins } from "./grants.ts";
 import { listChromiumCookieSites } from "./chromium-import.ts";
 import { pickCookieSites } from "./site-picker.ts";
 
-type LoginSession = Pick<BrowserSession, "setMode" | "closeBrowser" | "clearGrants" | "armPersistentProfile" | "ensureLaunched" | "applyGrants">;
+type LoginSession = Pick<BrowserSession, "setMode" | "closeBrowser" | "clearGrants" | "armPersistentProfile" | "ensureLaunched" | "applyGrants" | "profileName">;
 
 export async function loginWithUI(session: LoginSession, ctx: ExtensionContext): Promise<void> {
+	const name = session.profileName();
 	const cancel = () => ctx.ui.notify("Login cancelled", "info");
 	if (!await ctx.ui.confirm("Isolated browser login",
-		"Open Chromium on your screen with an isolated profile (not your real Chrome). Log in yourself. Then grant origins for this session only.")) {
+		`Open Chromium on your screen with ${name ? `saved profile ${name}` : "an isolated profile"} (not your real Chrome). Log in yourself. Saved site data remains on disk; access requires fresh origins for this session only.`)) {
 		cancel(); return;
 	}
 	let committed = false;
@@ -17,7 +18,7 @@ export async function loginWithUI(session: LoginSession, ctx: ExtensionContext):
 		session.setMode("host");
 		await session.closeBrowser();
 		await session.clearGrants();
-		session.armPersistentProfile();
+		session.armPersistentProfile(name);
 		await session.ensureLaunched();
 		if (!await ctx.ui.confirm("Logged in?",
 			"Use the Chromium window to log in. Confirm when finished. The agent still cannot use the profile until you grant origins.")) {

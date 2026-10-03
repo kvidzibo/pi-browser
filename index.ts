@@ -15,6 +15,7 @@ import { loginFromChromiumWithUI, loginWithUI } from "./login.ts";
 import { BrowserSession, type SessionResult } from "./session.ts";
 import { DEFAULT_SNAPSHOT_LINES, MAX_SNAPSHOT_LINES } from "./snapshot.ts";
 import { browserDoctor } from "./doctor.ts";
+import { profilesWithUI } from "./profile-ui.ts";
 
 export function toolResult(result: SessionResult) {
 	const truncation = truncateHead(result.content, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
@@ -97,10 +98,11 @@ export default function browserExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("browser", {
-		description: "Browser status, doctor, mode, login, grants, close",
+	const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+		description: "Browser profiles, status, doctor, mode, login, grants, close",
 		getArgumentCompletions: (prefix: string) => {
 			const items = [
+				{ value: "profiles", label: "profiles (create or select an isolated profile)" },
 				{ value: "status", label: "status" },
 				{ value: "doctor", label: "doctor (local capability checks)" },
 				{ value: "close", label: "close" },
@@ -120,12 +122,17 @@ export default function browserExtension(pi: ExtensionAPI) {
 			const [cmd, ...rest] = raw.length === 0 ? ["status"] : raw.split(/\s+/);
 			try {
 				await session.withLock(async () => {
+					if (cmd === "profiles") {
+						if (!canPrompt(ctx)) throw new Error("profiles need interactive UI");
+						await profilesWithUI(session, ctx);
+						return;
+					}
 					if (cmd === "status" || cmd === "") {
 						ctx.ui.notify(session.statusText(), "info");
 						return;
 					}
 					if (cmd === "doctor") {
-						ctx.ui.notify(await browserDoctor({ mode: session.displayMode(), network: session.networkSummary() }), "info");
+						ctx.ui.notify(await browserDoctor({ mode: session.displayMode(), profile: session.profileName(), network: session.networkSummary() }), "info");
 						return;
 					}
 					if (cmd === "close") {
@@ -159,11 +166,17 @@ export default function browserExtension(pi: ExtensionAPI) {
 						else throw new Error("Usage: /browser login [--from-chromium]");
 						return;
 					}
-					throw new Error("Usage: /browser status|doctor|close|mode xvfb|headless|host|login [--from-chromium]|logout|grants");
+					throw new Error("Usage: /pi-browser profiles|status|doctor|close|mode xvfb|headless|host|login [--from-chromium]|logout|grants");
 				});
 			} catch (err) {
 				ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
 			}
 		},
+	};
+	pi.registerCommand("browser", command);
+	pi.registerCommand("pi-browser", {
+		...command,
+		description: "Create/select isolated browser profiles; browser settings",
+		handler: (args, ctx) => command.handler(args?.trim() || "profiles", ctx),
 	});
 }
