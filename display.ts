@@ -85,19 +85,22 @@ export async function stopXvfb(handle: XvfbHandle | undefined, graceMs: number):
 	await killPid(handle.pid, graceMs);
 }
 
-export async function killPid(pid: number, graceMs: number): Promise<void> {
+export async function killPid(pid: number, graceMs: number, stillOwned: () => boolean = () => true): Promise<void> {
+	if (!stillOwned()) return;
 	try {
 		process.kill(pid, 0);
 	} catch {
 		return;
 	}
 	try {
+		if (!stillOwned()) return;
 		process.kill(pid, "SIGTERM");
 	} catch {
 		return;
 	}
 	const deadline = Date.now() + graceMs;
 	while (Date.now() < deadline) {
+		if (!stillOwned()) return;
 		try {
 			process.kill(pid, 0);
 			await new Promise((r) => setTimeout(r, 50));
@@ -106,6 +109,7 @@ export async function killPid(pid: number, graceMs: number): Promise<void> {
 		}
 	}
 	try {
+		if (!stillOwned()) return;
 		process.kill(pid, "SIGKILL");
 	} catch {
 		// already gone

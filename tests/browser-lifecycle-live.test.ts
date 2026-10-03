@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "patchright-core";
 import { BrowserSession } from "../session.ts";
+import { RUN_DIR_NAME } from "../constants.ts";
 
 async function fixture(run: (session: BrowserSession, context: BrowserContext, page: () => Page) => Promise<void>) {
 	const home = await mkdtemp(join(tmpdir(), "pi-browser-lifecycle-"));
@@ -103,6 +104,10 @@ test("named profiles keep site data separately but never restore session grants"
 		await session.createProfile("applications");
 		await session.createProfile("other");
 		await open("applications");
+		const runDirectory = join(process.env.PI_CODING_AGENT_DIR!, RUN_DIR_NAME);
+		const state = JSON.parse(await readFile(join(runDirectory, (await readdir(runDirectory))[0]), "utf8"));
+		assert.ok(state.browserPid > 0, "real Chromium launch must record a verifiable process identity");
+		assert.match(state.browserStartTime, /^\d+$/);
 		await driver.context.addCookies([{ name: "saved", value: "saved-fixture-secret", url: origin, expires: Date.now() / 1000 + 86400 }]);
 		await driver.requirePage().evaluate(() => localStorage.setItem("saved", "profile-storage-fixture"));
 		await assert.rejects(session.execute({ action: "navigate", url: "https://93.184.216.35" }), /not granted/);
