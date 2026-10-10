@@ -55,12 +55,13 @@ export async function requestCookieAccessWithUI(
 /** Transport-independent consent flow. Caller holds the session lock. */
 export async function requestCookieAccess(
 	session: CookieAccessSession, params: CookieAccessParams, confirm: CookieConfirmation, signal?: AbortSignal,
+	options: { refresh?: boolean } = {},
 ): Promise<SessionResult> {
 	if (signal?.aborted) return notGranted("cancelled");
 	// Copy and validate inputs before awaiting the dialog; later argument mutations cannot widen approval.
 	const requestedOrigins = exactOrigins(params.origins);
 	const cookieNames = parseCookieNames(params.cookieNames);
-	if (session.hasCookieAccess(requestedOrigins, cookieNames)) {
+	if (!options.refresh && session.hasCookieAccess(requestedOrigins, cookieNames)) {
 		return {
 			content: `Cookie access already approved for ${requestedOrigins.join(", ")} this session. Reusing the existing isolated profile; no cookies re-imported. Tabs and current grants unchanged. Ready for browser navigation.`,
 			details: { status: "granted", origins: requestedOrigins, cookieNames, reused: true },

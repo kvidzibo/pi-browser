@@ -87,7 +87,9 @@ Open **`/gateway` → Services → browser → Open app** for:
   the menu. Finishing closes the login window and restores the previous display mode.
   Unsaved login profiles require explicit exact origins before finishing.
 - Choosing Chromium cookie sites privately or entering comma-separated exact origins,
-  followed by a separate import confirmation. Large site/profile lists are paginated.
+  followed by a separate import confirmation. This operator action always refreshes
+  cookies and replaces grants (unlike model requests that reuse existing approval).
+  Large site/profile lists are paginated.
 - Closing the browser without revoking grants, or switching to anonymous/revoking access.
 
 These actions use **`native-ui/action`**, not model-callable tools. Stale revisions

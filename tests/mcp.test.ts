@@ -15,6 +15,8 @@ class Session extends BrowserSession {
 	shutdowns = 0;
 	selected?: string;
 	names: string[] = [];
+	profileRead?: Promise<void>;
+	afterSelect?: () => void;
 	scope: string[] = [];
 	override async reapStale() {}
 	override async shutdown() { this.shutdowns++; await this.clearGrants(); }
@@ -22,9 +24,9 @@ class Session extends BrowserSession {
 	override async clearGrants() { this.revocations++; this.scope = []; this.selected = undefined; }
 	override hasCookieAccess(origins: string[]) { return origins.every((origin) => this.scope.includes(origin)); }
 	override async importChromiumCookies(origins: string[]) { this.imports++; this.scope = [...origins]; return 2; }
-	override async listProfiles() { return [...this.names]; }
+	override async listProfiles() { await this.profileRead; return [...this.names]; }
 	override async createProfile(name: string) { this.names.push(name); return name; }
-	override async selectProfile(name: string) { this.selected = name; }
+	override async selectProfile(name: string) { this.selected = name; this.afterSelect?.(); }
 	override profileName() { return this.selected; }
 	override async execute() { return { content: "UNTRUSTED PAGE CONTENT\nfixture", image: { data: "cG5n", mimeType: "image/png" as const } }; }
 }
@@ -51,7 +53,7 @@ test("MCP keeps consent and operator actions off the model surface, cancels safe
 		const result = await client.readResource({ uri: UI_URI, _meta });
 		return JSON.parse((result.contents[0] as { text: string }).text);
 	};
-	const action = (revision: string, id: string, value?: string) => client.request({ method: "native-ui/action", params: { uri: UI_URI, revision, action: id, value, _meta: meta } }, z.object({ view: z.any(), preview: z.string().optional() }));
+	const action = (revision: string, id: string, value?: string, signal?: AbortSignal) => client.request({ method: "native-ui/action", params: { uri: UI_URI, revision, action: id, value, _meta: meta } }, z.object({ view: z.any(), preview: z.string().optional() }), { signal });
 	await service.connect(down); await client.connect(up);
 	try {
 		assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["browser"]);
@@ -94,6 +96,31 @@ test("MCP keeps consent and operator actions off the model surface, cancels safe
 		assert.equal(session.imports, 1);
 		assert.deepEqual(session.scope, []);
 		assert.match((mcpResult({ content: "x".repeat(60_000) }).content[0] as { text: string }).text, /Truncated/);
+
+		// The private import button promises refresh/replacement, even for a subset.
+		session.scope = ["https://8.8.8.8", "https://1.1.1.1"];
+		screen = await view();
+		screen = (await action(screen.revision, "origins", "https://8.8.8.8")).view;
+		await action(screen.revision, "import");
+		assert.equal(session.imports, 2);
+		assert.deepEqual(session.scope, ["https://8.8.8.8"]);
+
+		// Cancellation during the post-mutation view read must revoke the grant.
+		screen = await view();
+		let selected!: () => void, finishRead!: () => void;
+		const didSelect = new Promise<void>((resolve) => { selected = resolve; });
+		session.afterSelect = () => {
+			session.profileRead = new Promise<void>((resolve) => { finishRead = resolve; });
+			selected();
+		};
+		const privateAbort = new AbortController();
+		const selecting = action(screen.revision, "profile", "work", privateAbort.signal);
+		await didSelect; privateAbort.abort();
+		await assert.rejects(selecting);
+		finishRead(); session.profileRead = undefined; session.afterSelect = undefined;
+		await view();
+		assert.equal(session.selected, undefined);
+		assert.deepEqual(session.scope, []);
 	} finally { release?.(); await service.close(); await client.close(); }
 	assert.equal(session.shutdowns, 1);
 

@@ -83,7 +83,7 @@ export class BrowserApp {
 				case "sites-next": this.siteOffset += 100; break;
 				case "pick-site": this.origins = exactOrigins([...this.origins, value as string]); break;
 				case "sites-done": this.sites = undefined; break;
-				case "import": preview = (await requestCookieAccess(this.session, { origins: this.origins }, async () => true, signal)).content; break;
+				case "import": preview = (await requestCookieAccess(this.session, { origins: this.origins }, async () => true, signal, { refresh: true })).content; break;
 				case "close": await this.session.closeBrowser(); break;
 				case "logout": await this.revoke(); break;
 				case "login": {

@@ -34,8 +34,11 @@ export function createBrowserService(session = new BrowserSession()) {
 				const next = typeof context?.conversationId === "string" ? context.conversationId : undefined;
 				// Missing context after a bound UI session must not reuse its authority.
 				if (conversation !== next) { await app.revoke(); app.reset(); conversation = next; }
-				try { return await run(signal); }
-				catch (error) { if (signal.aborted) await app.revoke(); throw error; }
+				try {
+					const result = await run(signal);
+					signal.throwIfAborted();
+					return result;
+				} catch (error) { if (signal.aborted) await app.revoke(); throw error; }
 			}, signal);
 		} finally { pending.delete(id); }
 	}
