@@ -57,6 +57,12 @@ test("package manifest factory-loads browser tool without launching", async () =
 	const tool = (result.extensions[0].tools.get("browser") as any).definition;
 	await assert.rejects(tool.execute("fixture", { action: "not-an-action" }), /Invalid|Unknown|Unsupported/i);
 	assert.ok(tool.parameters.properties.action.enum.includes("request_cookies"));
+	assert.ok(tool.parameters.properties.action.enum.includes("list_cookies"));
+	await assert.rejects(tool.execute("fixture", { action: "list_cookies" }, undefined, undefined, { hasUI: false, mode: "print" }), /interactive approval/);
+	const inventoryDenied = await tool.execute("fixture", { action: "list_cookies" }, undefined, undefined, { hasUI: true, mode: "rpc", ui: {
+		confirm: async (_title: string, body: string) => { assert.match(body, /ALL cookie domains/); assert.match(body, /not cookie import/); return false; },
+	} });
+	assert.equal(inventoryDenied.details.status, "denied");
 	assert.equal(tool.parameters.properties.origins.maxItems, 8);
 	assert.equal(tool.parameters.properties.cookieNames.minItems, 1);
 	assert.match(tool.promptGuidelines.join(" "), /request_cookies.*reuses.*without prompting/);

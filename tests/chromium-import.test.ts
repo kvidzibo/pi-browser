@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { CookieImportError, cookieHostMatches, createChromiumCookieImport, defaultChromiumRoot, IMPORT_IGNORE_ARGS, listChromiumCookieSites, parseCookieNames } from "../chromium-import.ts";
 import { MAX_COOKIE_NAMES, MAX_COOKIE_NAME_CHARS } from "../constants.ts";
+import { listChromiumCookies } from "../chromium-import.ts";
+import { listCookieInventoryWithUI } from "../cookie-inventory.ts";
 
 const future = BigInt(Date.now()) * 1000n + 11644473600000000n + 86400000000n;
 async function fixture(run: (root: string, path: string, db: DatabaseSync, temp: string) => Promise<void>, network = true) {
@@ -91,6 +93,68 @@ for (const network of [true, false]) test(`cookie site discovery reads only meta
 		assert.equal(sites.find((site) => site.origin === "https://mail.google.com")!.label, "Gmail");
 		assert.deepEqual(await readFile(path), before); assert.deepEqual(await readFile(`${path}-wal`), walBefore);
 		assert.deepEqual(await readdir(temp), filesBefore, "discovery does not create a cookie snapshot");
+	}, network);
+});
+
+test("approved model inventory is metadata-only, scoped, bounded and source-preserving", async () => {
+	for (const network of [true, false]) await fixture(async (root, path, db, temp) => {
+		// No value columns: listing cannot query plaintext or encrypted cookie values.
+		db.exec(`DROP TABLE cookies;
+			CREATE TABLE cookies(host_key TEXT, name TEXT, path TEXT, has_expires INTEGER, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER)`);
+		const insert = db.prepare("INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+		insert.run(".example.test", "domain", "/", 1, future, 1, 1, 2);
+		insert.run("mail.example.test", "session", "/mail", 0, 0, 0, 0, 1);
+		insert.run("mail.example.test", "expired", "/", 1, 1, 1, 1, 0);
+		insert.run("example.test", "host-only", "/", 0, 0, 0, 0, -1);
+		insert.run("other.example.test", "sibling", "/", 0, 0, 0, 0, 0);
+		await writeFile(join(root, "Local State"), "invalid-private-encryption-data");
+		const before = await readFile(path), walBefore = await readFile(`${path}-wal`), files = await readdir(temp);
+		let approved: unknown = false, reads = 0, prompts = 0;
+		const controller = new AbortController();
+		const ctx: any = { hasUI: true, mode: "rpc", ui: { confirm: async (_title: string, body: string) => {
+			prompts++; assert.match(body, /not cookie import/); assert.match(body, /Values and encrypted values are never queried/); return approved;
+		} } };
+		const deps = { list: async (options: Parameters<typeof listChromiumCookies>[0]) => {
+			reads++; assert.equal(approved, true, "approval precedes source reads"); return listChromiumCookies({ ...options, sourceRoot: root });
+		} };
+		assert.equal((await listCookieInventoryWithUI(ctx, {}, controller.signal, deps)).details?.status, "denied");
+		assert.equal(reads, 0);
+		for (const mode of ["print", "json"]) await assert.rejects(listCookieInventoryWithUI({ ...ctx, mode }, {}, undefined, deps), /interactive approval/);
+		await assert.rejects(listCookieInventoryWithUI(ctx, { origins: [] }, undefined, deps), /Cookie requests/);
+		await assert.rejects(listCookieInventoryWithUI(ctx, { origins: ["https://user:secret@example.test"] }, undefined, deps), /exact HTTP/);
+		await assert.rejects(listCookieInventoryWithUI(ctx, { limit: 101 }, undefined, deps), /offset/);
+		assert.equal(prompts, 1); assert.equal(reads, 0);
+		approved = true;
+		const all = await listCookieInventoryWithUI(ctx, {}, undefined, deps);
+		assert.equal(all.details?.status, "listed");
+		assert.deepEqual((all.details?.cookies as any[]).map((row) => row.name), ["domain", "host-only", "session", "sibling"]);
+		const origins = ["https://mail.example.test"];
+		const page = await listCookieInventoryWithUI(ctx, { origins, limit: 1 }, undefined, deps);
+		assert.deepEqual(page.details?.cookies, [{ name: "domain", domain: ".example.test", path: "/",
+			expires: new Date(Number((future - 11644473600000000n) / 1000n)).toISOString(), secure: true, httpOnly: true, sameSite: "strict" }]);
+		assert.equal(page.details?.nextOffset, 2);
+		const next = await listCookieInventoryWithUI(ctx, { origins, offset: 2, limit: 1 }, undefined, deps);
+		assert.deepEqual(next.details?.cookies, [{ name: "session", domain: "mail.example.test", path: "/mail", expires: null, secure: false, httpOnly: false, sameSite: "lax" }]);
+		assert.equal(next.details?.nextOffset, undefined);
+		assert.deepEqual(await readFile(path), before); assert.deepEqual(await readFile(`${path}-wal`), walBefore);
+		assert.deepEqual(await readdir(temp), files, "inventory does not copy cookies or read encryption metadata");
+		assert.equal(reads, 3); assert.equal(prompts, 4, "every page requires consent");
+		controller.abort("private-abort-reason");
+		assert.equal((await listCookieInventoryWithUI(ctx, {}, controller.signal, deps)).details?.status, "cancelled");
+		assert.equal(reads, 3);
+		const cancelledDuringPrompt = new AbortController();
+		const cancelled = await listCookieInventoryWithUI(ctx, {}, cancelledDuringPrompt.signal, { ...deps,
+			confirm: async () => { cancelledDuringPrompt.abort(); return true; },
+		});
+		assert.equal(cancelled.details?.status, "cancelled"); assert.equal(reads, 3);
+		await assert.rejects(listCookieInventoryWithUI(ctx, {}, undefined, { list: async () => { throw new Error("private-source-error"); } }), (error: Error) => {
+			assert.match(error.message, /Could not list/); assert.ok(!error.message.includes("private-source-error")); return true;
+		});
+		for (let i = 0; i < 30; i++) insert.run("mail.example.test", `wide-${i}`, "/".repeat(2048), 0, 0, 1, 1, 2);
+		const bounded = await listCookieInventoryWithUI(ctx, { origins, limit: 100 }, undefined, deps);
+		assert.ok(Buffer.byteLength(bounded.content) < 34000);
+		assert.ok(bounded.details?.nextOffset);
+		assert.ok(!JSON.stringify(bounded).includes("invalid-private-encryption-data"));
 	}, network);
 });
 

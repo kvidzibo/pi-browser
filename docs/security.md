@@ -12,6 +12,12 @@ This is anti-automation hardening, not a captcha solver and not a residential-IP
 
 **Design trade-off:** ephemeral anonymous profiles and per-session login grants keep agent browsing separate from everyday profiles. `/pi-browser` optionally creates named private profiles with retained cookies/site storage. User selection authorizes the agent to act as you on all public websites for this session, without per-origin prompts; normal browser domain/path cookie rules still apply. The picker and creation consent disclose this broad scope. Scoped legacy login and everyday-browser cookie imports continue to require exact-origin approval. Close preserves approval; logout/reload/shutdown revoke approval and selection without deleting the saved data. The model cannot select a profile, and approvals are never saved to disk. For scoped legacy login/import, ungranted document destinations are blocked. Selected named profiles instead allow all public document destinations and native cookie-bearing subresources; private addresses remain blocked by routing and the pinning proxy. These controls are not a complete sandbox. See [grant handling](../grants.ts), [grant tests](../tests/grants.test.ts), and the [login guide](usage.md#cookies--login).
 
+`list_cookies` requires separate per-page consent before reading Chromium cookie
+metadata, including the all-domain disclosure when no origins filter is supplied.
+It never queries cookie values or encryption metadata, touches the keyring, launches
+a browser, or changes grants. Import approval does not authorize inventory, nor does
+inventory approval authorize import. Metadata is untrusted data and may reveal browsing habits.
+
 ## Network gate
 
 Every navigation and subresource is checked. Ordinary Chromium traffic goes through a local pinning proxy: DNS is resolved, private answers are rejected, and the TCP connect uses the validated address (no second lookup).

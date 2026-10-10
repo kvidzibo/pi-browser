@@ -123,6 +123,34 @@ Default profile is **ephemeral**. There is no automatic access to your everyday 
 
 Do not type passwords into the `browser` tool. Cancelled or failed login—including browser launch failure—closes the attempted login and clears its grants/persistent-profile selection. Snapshot revisions are not reused after close/reopen, and tool failures reject with redacted messages so Pi marks them as errors.
 
+### Discover cookies available to import (Linux)
+
+```json
+{ "action": "list_cookies" }
+```
+
+Approval is required **before reading the source profile**, even if import access
+was previously approved. The dialog warns that metadata can reveal sites you use.
+Omit `origins` to list all domains, or filter by exact HTTP(S) origins:
+
+```json
+{ "action": "list_cookies", "origins": ["https://mail.google.com"], "limit": 20 }
+```
+
+Returns names, domains, paths, ISO expiry (`null` for session cookies), Secure,
+HttpOnly and SameSite flags for session/unexpired cookies. Values, encrypted values
+and encryption metadata are never queried; no keyring, browser launch, DNS or copy.
+Profiles, tabs and grants stay unchanged. Treat metadata as untrusted data.
+Presence does not prove a login or guarantee importability; private destinations
+remain blocked and keyring/device-bound restrictions still apply to imports.
+
+`limit` is 1–100 (default 20), `offset` is 1–10000 (default 1). Results are also
+byte-bounded. If `nextOffset` is returned, pass it as `offset` with the same origins.
+Each page needs fresh approval and reads live data, so cookies changing between
+pages may shift results. TUI/RPC approval only; print/JSON modes fail closed.
+Denial/cancellation returns no metadata; do not retry without user direction.
+`request_cookies` still needs separate import approval and optional name filters.
+
 ### Let the model request cookie access (Linux)
 
 The model can call:
@@ -248,7 +276,8 @@ manual comma-separated origin prompt.
   sites may still require sign-in. Re-run the command to refresh the snapshot, or use
   the ordinary `/browser login` flow.
 
-The model-facing tool can request permission but has no raw cookie-extraction action.
+The model-facing tool can request permission or approved metadata inventory through
+`list_cookies`, but has no raw cookie-value extraction action.
 Running the manual command permits a
 read-only inventory of cookie host/expiry metadata for the user-only picker. It does
 not query cookie values, access the keyring, inspect history, resolve unselected hosts,
