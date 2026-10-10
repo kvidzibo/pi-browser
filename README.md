@@ -42,6 +42,10 @@ Do not log in, submit forms or follow links. Close the browser when done.
 
 This is a usage example, not a recorded session. It needs public network access.
 The `browser` tool handles navigation, snapshots, clicks, typing, tabs, and screenshots.
+`browser` action `list_cookies` lists cookie names, domains, paths, expiry and security
+flags available in Chromium's Linux Default profile after approval, never values.
+Omit `origins` for all domains or supply exact origins to filter. Listing does not
+import cookies or grant signed-in access; `request_cookies` needs separate approval.
 Use element references from the **latest snapshot**. For continuation, use the returned
 `snapshotId` and `offset`; navigating or switching tabs invalidates old references.
 

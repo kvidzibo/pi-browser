@@ -141,6 +141,61 @@ export async function listChromiumCookieSites(options: { sourceRoot?: string; pl
 	}
 }
 
+export type CookieMetadata = {
+	name: string; domain: string; path: string; expires: string | null;
+	secure: boolean; httpOnly: boolean; sameSite: string;
+};
+export type CookieInventoryPage = { cookies: CookieMetadata[]; nextOffset?: number };
+
+/** Metadata only, called after inventory approval. Never selects values or encryption metadata. */
+export async function listChromiumCookies(options: {
+	origins?: string[]; offset: number; limit: number; sourceRoot?: string; platform?: NodeJS.Platform;
+}): Promise<CookieInventoryPage> {
+	if ((options.platform ?? process.platform) !== "linux") throw new Error("Chromium cookie inventory currently supports Linux only");
+	try {
+		const { sourcePath } = await cookieSource(options.sourceRoot);
+		const { DatabaseSync } = await import("node:sqlite");
+		const source = new DatabaseSync(sourcePath, { readOnly: true, timeout: 1000 });
+		try {
+			checkCookieDatabase(source);
+			// Enumerate exact hosts and domain-cookie suffixes, matching the importer's domain rules.
+			const domains = options.origins && [...new Set(options.origins.flatMap((origin) => {
+				const host = new URL(origin).hostname.toLowerCase();
+				return [host, ...host.split(".").map((_, i, labels) => `.${labels.slice(i).join(".")}`)];
+			}))];
+			const filter = domains ? ` AND host_key COLLATE NOCASE IN (${domains.map(() => "?").join(", ")})` : "";
+			const query = source.prepare(`SELECT name, host_key, path, has_expires, expires_utc, is_secure, is_httponly, samesite
+				FROM cookies WHERE (has_expires = 0 OR expires_utc > ?)${filter}
+				ORDER BY host_key COLLATE BINARY, name COLLATE BINARY, path COLLATE BINARY, rowid LIMIT ? OFFSET ?`);
+			query.setReadBigInts(true);
+			const now = BigInt(Date.now()) * 1000n + 11644473600000000n;
+			const rows = query.all(now, ...(domains ?? []), options.limit + 1, options.offset - 1);
+			const cookies: CookieMetadata[] = [];
+			let bytes = 0;
+			for (const row of rows.slice(0, options.limit)) {
+				if (typeof row.name !== "string" || row.name.length > 4096 ||
+					typeof row.host_key !== "string" || row.host_key.length > 253 ||
+					typeof row.path !== "string" || row.path.length > 2048 ||
+					[row.name, row.host_key, row.path].some((value) => /[\p{C}]/u.test(value)) ||
+					typeof row.expires_utc !== "bigint" || ![0n, 1n].includes(row.has_expires as bigint) ||
+					![0n, 1n].includes(row.is_secure as bigint) || ![0n, 1n].includes(row.is_httponly as bigint)) throw new Error("Unsupported metadata");
+				const cookie: CookieMetadata = {
+					name: row.name, domain: row.host_key, path: row.path,
+					expires: row.has_expires === 0n ? null : new Date(Number((row.expires_utc - 11644473600000000n) / 1000n)).toISOString(),
+					secure: row.is_secure === 1n, httpOnly: row.is_httponly === 1n,
+					sameSite: ({ "-1": "unspecified", "0": "none", "1": "lax", "2": "strict" } as Record<string, string>)[String(row.samesite)] ?? "unknown",
+				};
+				const size = Buffer.byteLength(JSON.stringify(cookie)) + 1;
+				if (bytes + size > 32 * 1024) break;
+				bytes += size; cookies.push(cookie);
+			}
+			return { cookies, ...(rows.length > cookies.length ? { nextOffset: options.offset + cookies.length } : {}) };
+		} finally { source.close(); }
+	} catch {
+		throw new Error("Could not list Chromium cookie metadata. Check Node >=22.19.0 and the readable Linux Default profile. No cookie values were returned.");
+	}
+}
+
 /** Called only after UI-confirmed cookie access (tool request or slash command). Never returns values. */
 export async function createChromiumCookieImport(
 	origins: string[],

@@ -9,9 +9,9 @@ import type { BrowserSession, SessionResult } from "./session.ts";
 type CookieAccessSession = Pick<BrowserSession, "closeBrowser" | "clearGrants" | "importChromiumCookies" | "hasCookieAccess">;
 export type CookieAccessParams = { origins?: string[]; cookieNames?: string[] };
 
-function exactOrigins(input: unknown): string[] {
+export function exactOrigins(input: unknown): string[] {
 	if (!Array.isArray(input) || input.length === 0 || input.length > MAX_COOKIE_ORIGINS) {
-		throw new Error(`request_cookies requires 1..${MAX_COOKIE_ORIGINS} exact HTTP(S) origins`);
+		throw new Error(`Cookie requests require 1..${MAX_COOKIE_ORIGINS} exact HTTP(S) origins`);
 	}
 	return [...new Set(input.map((origin) => {
 		try {
