@@ -27,7 +27,9 @@
   },
   "scripts": {
     "test": "npm run test:unit && npm run test:load",
-    "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
+    "test:unit": "npm run build:mcp && node --test --experimental-strip-types tests/*.test.ts",
+    "build:mcp": "tsc -p tsconfig.mcp.json",
+    "prepack": "npm run build:mcp",
     "test:load": "node --test --experimental-strip-types load.test.ts",
     "test:mcp": "node --test --experimental-strip-types tests/mcp.test.ts",
     "test:integration": "BROWSER_LOCAL_INTEGRATION=1 node --test --experimental-strip-types tests/cookieless.test.ts tests/chromium-import-live.test.ts tests/browser-lifecycle-live.test.ts",
@@ -39,7 +41,8 @@
     "zod": "^4.6.5"
   },
   "files": [
-    "mcp/",
+    "mcp/cli.mjs",
+    "dist-mcp/",
     "docs/mcp.md",
     "actions.ts",
     "browser-bin.ts",

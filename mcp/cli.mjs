@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createBrowserService } from './service.ts';
+import { createBrowserService } from '../dist-mcp/mcp/service.js';
 
 // stdout belongs exclusively to MCP. Never log browser details or cookie data.
 const service = createBrowserService();

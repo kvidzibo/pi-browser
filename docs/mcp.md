@@ -12,13 +12,17 @@ browse anonymously but currently has no browser approval/app UI.
 
 ```bash
 cd /absolute/path/to/pi-browser
-npm ci --omit=dev --omit=peer --ignore-scripts
+npm ci --include=dev --ignore-scripts
+npm run build:mcp
 node mcp/cli.mjs  # stdio server; normally started by the gateway
 ```
 
-There is no build step: Node loads the shipped TypeScript using native type stripping.
-The published package also provides the `pi-browser-mcp` executable. Pi packages
-are optional peers; the MCP runtime never imports them.
+Source checkouts need `build:mcp` after updates. Published packages include compiled
+JavaScript and provide the `pi-browser-mcp` executable without a build step.
+Pi packages are optional peers; the MCP runtime never imports them. Production
+installs can use `npm install --omit=dev --omit=peer @kvidzibo/pi-browser`.
+`npm pack`/publish build the service automatically; Node's type stripping cannot
+load source TypeScript installed beneath `node_modules`.
 
 Merge this service into your gateway configuration, preserving other services:
 
