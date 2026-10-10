@@ -20,8 +20,8 @@ export async function listCookieInventoryWithUI(
 	if (signal?.aborted) return stopped("cancelled");
 	const origins = params.origins === undefined ? undefined : exactOrigins(params.origins);
 	const offset = params.offset ?? 1, limit = params.limit ?? 20;
-	if (!Number.isInteger(offset) || offset < 1 || offset > 10000 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-		throw new Error("list_cookies requires offset 1..10000 and limit 1..100");
+	if (!Number.isSafeInteger(offset) || offset < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+		throw new Error("list_cookies requires a positive safe-integer offset and limit 1..100");
 	}
 	const approved = await (options.confirm ?? confirmCookieAccessWithUI)(ctx, "Allow Chromium cookie inventory?",
 		"Source: Chromium's Linux Default profile (read-only metadata).\n" +

@@ -78,7 +78,7 @@ export default function browserExtension(pi: ExtensionAPI) {
 			tabId: Type.Optional(Type.String({ description: "For tabs switch/close" })),
 			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_WAIT_MS, description: "For wait" })),
 			snapshotId: Type.Optional(Type.Integer({ minimum: 1, description: "For snapshot continuation: snapshot number from the previous result. Omit for a fresh snapshot." })),
-			offset: Type.Optional(Type.Integer({ minimum: 1, description: "For snapshot: first line (1-indexed); offset >1 requires snapshotId. For list_cookies: cookie offset 1..10000 (default 1), live page with fresh approval." })),
+			offset: Type.Optional(Type.Integer({ minimum: 1, description: "For snapshot: first line (1-indexed); offset >1 requires snapshotId. For list_cookies: positive cookie offset (default 1), live page with fresh approval." })),
 			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SNAPSHOT_LINES, description: `For snapshot: maximum lines (default ${DEFAULT_SNAPSHOT_LINES}). For list_cookies: 1..100 cookies (default 20). Both byte-limited.` })),
 			depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 30, description: "For a fresh snapshot: limit tree depth." })),
 			image: Type.Optional(Type.Boolean({ description: "For screenshot: attach PNG as well as saving it (default false). Visible page data is not secret-redacted." })),

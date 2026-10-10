@@ -173,7 +173,7 @@ export async function listChromiumCookies(options: {
 			const cookies: CookieMetadata[] = [];
 			let bytes = 0;
 			for (const row of rows.slice(0, options.limit)) {
-				if (typeof row.name !== "string" || row.name.length > MAX_COOKIE_NAME_CHARS ||
+				if (typeof row.name !== "string" || row.name.length > 4096 ||
 					typeof row.host_key !== "string" || row.host_key.length > 253 ||
 					typeof row.path !== "string" || row.path.length > 2048 ||
 					[row.name, row.host_key, row.path].some((value) => /[\p{C}]/u.test(value)) ||

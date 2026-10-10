@@ -144,7 +144,7 @@ Profiles, tabs and grants stay unchanged. Treat metadata as untrusted data.
 Presence does not prove a login or guarantee importability; private destinations
 remain blocked and keyring/device-bound restrictions still apply to imports.
 
-`limit` is 1–100 (default 20), `offset` is 1–10000 (default 1). Results are also
+`limit` is 1–100 (default 20), `offset` is a positive safe integer (default 1). Results are also
 byte-bounded. If `nextOffset` is returned, pass it as `offset` with the same origins.
 Each page needs fresh approval and reads live data, so cookies changing between
 pages may shift results. TUI/RPC approval only; print/JSON modes fail closed.

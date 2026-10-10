@@ -150,11 +150,23 @@ test("approved model inventory is metadata-only, scoped, bounded and source-pres
 		await assert.rejects(listCookieInventoryWithUI(ctx, {}, undefined, { list: async () => { throw new Error("private-source-error"); } }), (error: Error) => {
 			assert.match(error.message, /Could not list/); assert.ok(!error.message.includes("private-source-error")); return true;
 		});
+		const longName = "N".repeat(4096);
+		insert.run("long.example.test", longName, "/", 0, 0, 1, 1, 2);
+		const long = await listCookieInventoryWithUI(ctx, { origins: ["https://long.example.test"] }, undefined, deps);
+		assert.ok((long.details?.cookies as any[]).some((cookie) => cookie.name === longName), "inventory bounds are independent of import-name filters");
 		for (let i = 0; i < 30; i++) insert.run("mail.example.test", `wide-${i}`, "/".repeat(2048), 0, 0, 1, 1, 2);
 		const bounded = await listCookieInventoryWithUI(ctx, { origins, limit: 100 }, undefined, deps);
 		assert.ok(Buffer.byteLength(bounded.content) < 34000);
 		assert.ok(bounded.details?.nextOffset);
 		assert.ok(!JSON.stringify(bounded).includes("invalid-private-encryption-data"));
+		db.exec(`DELETE FROM cookies;
+			WITH RECURSIVE sequence(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM sequence WHERE n < 10001)
+			INSERT INTO cookies SELECT 'mail.example.test', printf('cookie-%05d', n), '/', 0, 0, 1, 1, 2 FROM sequence`);
+		const tail = await listCookieInventoryWithUI(ctx, { origins, offset: 10000, limit: 1 }, undefined, deps);
+		assert.equal(tail.details?.nextOffset, 10001);
+		const last = await listCookieInventoryWithUI(ctx, { origins, offset: tail.details?.nextOffset as number, limit: 1 }, undefined, deps);
+		assert.equal((last.details?.cookies as any[])[0].name, "cookie-10001");
+		assert.equal(last.details?.nextOffset, undefined);
 	}, network);
 });
 
