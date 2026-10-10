@@ -45,6 +45,12 @@ pagination, image attachments and the agent-directory override.
 
 ### Architecture
 
+- `mcp/cli.mjs` / `mcp/service.ts`: standalone stdio MCP lifecycle, validated browser tool,
+  elicitation, and conversation-bound revocation; no Pi runtime dependency.
+- `mcp/app.ts`: private native UI v1 profile/login/import controls for the gateway.
+  Shared cookie consent flows in `cookie-access.ts` and `cookie-inventory.ts` accept
+  a transport-independent confirmation callback. See [MCP setup](mcp.md).
+
 - `session.ts`: command/action orchestration and approved cookie-profile transactions.
 - `runtime.ts`: browser launch, native sizing, partial-launch cleanup and private run-state files.
   Stale cleanup verifies exact Chromium profile-lock ownership and PID/start-time identity before

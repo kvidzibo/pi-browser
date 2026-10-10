@@ -2,7 +2,9 @@ import { isIP } from "node:net";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CookieImportError, parseCookieNames } from "./chromium-import.ts";
 import { MAX_COOKIE_ORIGINS, MAX_URL_CHARS } from "./constants.ts";
-import { confirmCookieAccessWithUI } from "./cookie-consent.ts";
+import type { confirmCookieAccessWithUI } from "./cookie-consent.ts";
+
+export type CookieConfirmation = (title: string, message: string, signal?: AbortSignal) => Promise<boolean>;
 import { normalizeHostname, validateBrowserUrl } from "./gate.ts";
 import type { BrowserSession, SessionResult } from "./session.ts";
 
@@ -44,6 +46,16 @@ export async function requestCookieAccessWithUI(
 	if (!ctx?.hasUI || (ctx.mode !== "tui" && ctx.mode !== "rpc")) {
 		throw new Error("Cookie access requires an interactive approval dialog (TUI or RPC). No access granted.");
 	}
+	return requestCookieAccess(session, params, async (title, message, signal) => {
+		const confirm = options.confirm ?? (await import("./cookie-consent.ts")).confirmCookieAccessWithUI;
+		return confirm(ctx, title, message, signal);
+	}, signal);
+}
+
+/** Transport-independent consent flow. Caller holds the session lock. */
+export async function requestCookieAccess(
+	session: CookieAccessSession, params: CookieAccessParams, confirm: CookieConfirmation, signal?: AbortSignal,
+): Promise<SessionResult> {
 	if (signal?.aborted) return notGranted("cancelled");
 	// Copy and validate inputs before awaiting the dialog; later argument mutations cannot widen approval.
 	const requestedOrigins = exactOrigins(params.origins);
@@ -54,7 +66,7 @@ export async function requestCookieAccessWithUI(
 			details: { status: "granted", origins: requestedOrigins, cookieNames, reused: true },
 		};
 	}
-	const approved = await (options.confirm ?? confirmCookieAccessWithUI)(ctx, "Allow browser cookie access for this session?",
+	const approved = await confirm("Allow browser cookie access for this session?",
 		`Source: Chromium's Linux Default profile (read-only snapshot).\n` +
 		`Destinations (exact origins):\n${requestedOrigins.map((origin) => `  ${origin}`).join("\n")}\n` +
 		`Cookie names: ${cookieNames ? cookieNames.join(", ") : "ALL cookies matching these destinations"}.\n\n` +
@@ -62,7 +74,7 @@ export async function requestCookieAccessWithUI(
 		"Name filters limit the imported snapshot, not cookies the site creates later.\n\n" +
 		"The agent can act as you on these origins for this session. Requests within this scope reuse approval without another prompt or import. " +
 		"New origins or broader cookie-name access need approval. This replaces the current browser profile/grants and closes its tabs. " +
-		"Cookie values are not shown to the model. The temporary copy is deleted on /browser logout, /reload or shutdown.",
+		"Cookie values are not shown to the model. The temporary copy is deleted on /browser logout (or Revoke access in the MCP app), /reload or shutdown.",
 		signal);
 	if (signal?.aborted) return notGranted("cancelled");
 	if (approved !== true) return notGranted("denied");
