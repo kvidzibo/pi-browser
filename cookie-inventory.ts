@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listChromiumCookies } from "./chromium-import.ts";
-import { exactOrigins } from "./cookie-access.ts";
-import { confirmCookieAccessWithUI } from "./cookie-consent.ts";
+import { exactOrigins, type CookieConfirmation } from "./cookie-access.ts";
+import type { confirmCookieAccessWithUI } from "./cookie-consent.ts";
 import type { SessionResult } from "./session.ts";
 
 export type CookieInventoryParams = { origins?: string[]; offset?: number; limit?: number };
@@ -14,6 +14,16 @@ export async function listCookieInventoryWithUI(
 	if (!ctx?.hasUI || (ctx.mode !== "tui" && ctx.mode !== "rpc")) {
 		throw new Error("Cookie inventory requires an interactive approval dialog (TUI or RPC). No inventory read.");
 	}
+	return listCookieInventory(params, async (title, message, signal) => {
+		const confirm = options.confirm ?? (await import("./cookie-consent.ts")).confirmCookieAccessWithUI;
+		return confirm(ctx, title, message, signal);
+	}, signal, options.list);
+}
+
+export async function listCookieInventory(
+	params: CookieInventoryParams, confirm: CookieConfirmation, signal?: AbortSignal,
+	list = listChromiumCookies,
+): Promise<SessionResult> {
 	const stopped = (status: "denied" | "cancelled"): SessionResult => ({
 		content: `Cookie inventory ${status}. No metadata returned. Do not retry without the user's direction.`, details: { status },
 	});
@@ -23,7 +33,7 @@ export async function listCookieInventoryWithUI(
 	if (!Number.isSafeInteger(offset) || offset < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
 		throw new Error("list_cookies requires a positive safe-integer offset and limit 1..100");
 	}
-	const approved = await (options.confirm ?? confirmCookieAccessWithUI)(ctx, "Allow Chromium cookie inventory?",
+	const approved = await confirm("Allow Chromium cookie inventory?",
 		"Source: Chromium's Linux Default profile (read-only metadata).\n" +
 		`Scope: ${origins ? origins.join(", ") : "ALL cookie domains in this profile"}.\n` +
 		`Page: offset ${offset}, up to ${limit} cookies.\n\n` +
@@ -35,7 +45,7 @@ export async function listCookieInventoryWithUI(
 	if (signal?.aborted) return stopped("cancelled");
 	if (approved !== true) return stopped("denied");
 	try {
-		const page = await (options.list ?? listChromiumCookies)({ origins, offset, limit });
+		const page = await list({ origins, offset, limit });
 		if (signal?.aborted) return stopped("cancelled");
 		return {
 			content: "Chromium cookie metadata (untrusted data; no values). Presence does not guarantee import or login.\n" +
