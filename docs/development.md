@@ -16,8 +16,10 @@ xvfb-run -a npm run test:integration
 The factory suite uses the pinned development Pi (a global `pi` is only a fallback).
 `npm run test:unit` runs without launching Chromium. CI runs typechecking, the full
 factory/TUI suite, packaging checks and local Chromium integration on **Node 22 and
-24**. Publishing depends on that same validation workflow. The public-network smoke
-remains opt-in; CI uses synthetic cookies, fixtures and a private test keyring.
+24**. Publishing depends on that same validation workflow and installs development
+dependencies because `prepack` compiles the MCP runtime with TypeScript and Node
+typings. The public-network smoke remains opt-in; CI uses synthetic cookies,
+fixtures and a private test keyring.
 
 No live browser in the default suite. Cookie-site and name-filter tests use synthetic SQLite/WAL files;
 permission tests cover approval reuse, scope expansion, denial, cancellation, exact
