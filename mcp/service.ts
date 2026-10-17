@@ -16,7 +16,7 @@ export function mcpResult(result: SessionResult): CallToolResult {
 /** One browser per stdio connection. The only model-callable surface is browser;
  * operator actions travel over native-ui/action, never tool arguments/results. */
 export function createBrowserService(session = new BrowserSession()) {
-	const server = new Server({ name: "pi-browser", version: "0.6.0" }, { capabilities: { tools: {}, resources: {}, experimental: { "native-ui-v1": {} } } });
+	const server = new Server({ name: "pi-browser", version: "0.6.1" }, { capabilities: { tools: {}, resources: {}, experimental: { "native-ui-v1": {} } } });
 	const app = new BrowserApp(session);
 	const lifetime = new AbortController();
 	const pending = new Map<RequestId, AbortController>();
