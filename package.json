@@ -1,6 +1,6 @@
 {
   "name": "@kvidzibo/pi-browser",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Isolated Chromium for Pi and MCP: private approvals, saved profiles and LAN blocking",
   "bin": { "pi-browser-mcp": "mcp/cli.mjs" },
   "author": "Tomas Rackauskas",

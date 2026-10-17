@@ -16,7 +16,7 @@ pi install npm:@kvidzibo/pi-browser
 Git:
 
 ```bash
-pi install git:github.com/kvidzibo/pi-browser@v0.1.0
+pi install git:github.com/kvidzibo/pi-browser
 ```
 
 Local checkout — Pi adds the path only; it does **not** run `npm install` for local sources:

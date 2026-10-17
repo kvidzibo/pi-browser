@@ -104,7 +104,7 @@ confirmations. Never expose arbitrary native RPC as a model tool.
 Each service process owns one browser session; separate gateway launches do not
 share active browser state. Saved profile directories survive, but selecting one
 is always a fresh human action. Never use a saved profile in two processes at once.
-Close/logout/reload semantics and [network protections](security.md) match the native
+Close/logout/reload semantics and [network protections](https://github.com/kvidzibo/pi-browser/blob/main/docs/security.md) match the native
 extension: localhost/private IPs/file URLs remain blocked and screenshot files remain
 on disk. Shutdown/EOF/SIGINT/SIGTERM close Chromium/Xvfb and revoke imported access.
 Process crashes or forced kills can leave stale temporary state; the next launch uses
