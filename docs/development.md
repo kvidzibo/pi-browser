@@ -28,8 +28,9 @@ tool wiring and the full native cookie-approval path using a synthetic session: 
 default denial, cancellation, remapped keys, resizing and narrow-terminal bounds.
 It also exercises cookie-site multi-selection, search, keyboard/mouse input and manual origins.
 
-Local integration requires Chrome/Chromium, `xvfb-run`, `xauth`, and `openssl` on
-PATH. Set `PI_BROWSER_EXECUTABLE` if browser discovery cannot find your executable.
+Local integration requires `chromium` or `chromium-browser`, `xvfb-run`, `xauth`,
+and `openssl` on PATH. The cookie-import fixture requires Chromium by that name
+and ignores `PI_BROWSER_EXECUTABLE`; Chrome alone is insufficient.
 Optional encrypted-cookie coverage also needs `gnome-keyring-daemon`, `dbus-daemon`,
 and `gdbus`; set `BROWSER_REQUIRE_KEYRING=1` to fail rather than skip when missing.
 
