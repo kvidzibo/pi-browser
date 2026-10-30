@@ -1,8 +1,7 @@
 {
   "name": "@kvidzibo/pi-browser",
-  "version": "0.6.1",
-  "description": "Isolated Chromium for Pi and MCP: private approvals, saved profiles and LAN blocking",
-  "bin": { "pi-browser-mcp": "mcp/cli.mjs" },
+  "version": "0.7.0",
+  "description": "Isolated Chromium for Pi: private approvals, saved profiles and LAN blocking",
   "author": "Tomas Rackauskas",
   "keywords": [
     "pi-package"
@@ -27,23 +26,15 @@
   },
   "scripts": {
     "test": "npm run test:unit && npm run test:load",
-    "test:unit": "npm run build:mcp && node --test --experimental-strip-types tests/*.test.ts",
-    "build:mcp": "tsc -p tsconfig.mcp.json",
-    "prepack": "npm run build:mcp",
+    "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
     "test:load": "node --test --experimental-strip-types load.test.ts",
-    "test:mcp": "node --test --experimental-strip-types tests/mcp.test.ts",
     "test:integration": "BROWSER_LOCAL_INTEGRATION=1 node --test --experimental-strip-types tests/cookieless.test.ts tests/chromium-import-live.test.ts tests/browser-lifecycle-live.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "patchright-core": "^1.62.1",
-    "zod": "^4.6.5"
+    "patchright-core": "^1.62.1"
   },
   "files": [
-    "mcp/cli.mjs",
-    "dist-mcp/",
-    "docs/mcp.md",
     "actions.ts",
     "browser-bin.ts",
     "cancellation.ts",
