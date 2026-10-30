@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - run: npm ci --include=dev --ignore-scripts
+      - run: npm ci --omit=dev --omit=peer --ignore-scripts
       - name: Publish if version is new
         run: |
           set -euo pipefail

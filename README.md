@@ -7,11 +7,10 @@ with JavaScript-heavy pages through Patchright/Chromium, without driving your
 everyday browser profile. Prefer [pi-web-access](https://github.com/kvidzibo/pi-web-access)
 for static public HTML. This is not a CAPTCHA solver or a complete sandbox.
 
-Also available as **`pi-browser-mcp`**, a standalone stdio MCP service. With the
-[MCP gateway](https://github.com/kvidzibo/mcp-session-gateway), cookie approvals go
-directly to the human and profiles/login/settings live in **`/gateway` → Services
-→ browser → Open app**. No browser-specific Pi extension is needed. See
-[MCP setup and migration](docs/mcp.md); do not load both backends at once.
+Version 0.7.0 is native Pi-only; the standalone MCP server and executable have been removed.
+
+Pi 1.4.0 fullscreen reserves PgUp/PgDn for transcript scrolling. Review long
+cookie-approval disclosures in regular TUI mode (`pi --tui-mode regular`).
 
 ## Install
 
@@ -110,7 +109,6 @@ From the repository root:
 ```bash
 npm ci --include=dev --ignore-scripts
 npm run typecheck
-npm run test:mcp
 xvfb-run -a npm test
 xvfb-run -a npm run test:integration
 ```
